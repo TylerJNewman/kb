@@ -487,6 +487,157 @@ Advisor:
   expect(result.stdout).not.toContain("enable search");
 });
 
+test("kb status Advisor suggests enable search at the index threshold only", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+
+  await writeFile(join(kbDir, "index.md"), indexWithEntries(2));
+  const before = await harness.runKb(["status", "--kb", "research"]);
+  expect(before.stdout).toContain("Advisor:\n- No suggestions.");
+
+  await writeFile(join(kbDir, "index.md"), indexWithEntries(3));
+  const after = await harness.runKb(["status", "--kb", "research"]);
+
+  expect(after.code).toBe(0);
+  expect(after.stderr).toBe("");
+  expect(after.stdout).toContain("- Try `kb enable search`: 3 index entries make hybrid search more useful than plain file search.");
+});
+
+test("kb enable search lazy-installs Basic Memory, adds the project, reindexes, and flips to B1", async () => {
+  await scaffoldResearchKb();
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "basic-memory" ] && [ "$2" = "--version" ]; then
+  /bin/cat > "\${0%/*}/bm" <<'SH'
+#!/bin/sh
+printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then
+  echo "Basic Memory version: 0.22.1"
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then
+  echo "Project '$3' added successfully"
+  exit 0
+fi
+if [ "$1" = "reindex" ]; then
+  echo "Reindex complete!"
+  exit 0
+fi
+exit 2
+SH
+  /bin/chmod +x "\${0%/*}/bm"
+  echo "Basic Memory version: 0.22.1"
+  exit 0
+fi
+if [ "$1" = "--version" ]; then
+  echo "uvx 0.0.0"
+  exit 0
+fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+  const kbDir = join(harness.home, "kb", "research");
+
+  expect(result).toEqual({ code: 0, stdout: "Search enabled for research.\n", stderr: "" });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(`schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b1
+engine:
+  basicMemory:
+    state: enabled
+    project: research
+lastReflectAt: null
+`);
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
+uvx basic-memory --version
+bm project add research ${kbDir}
+bm reindex --project research --search
+`);
+});
+
+test("kb enable search is idempotent once already enabled", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "kb.yaml"), `schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b1
+engine:
+  basicMemory:
+    state: enabled
+    project: research
+lastReflectAt: null
+`);
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({ code: 0, stdout: "Search already enabled for research.\n", stderr: "" });
+});
+
+test("kb enable search fails clearly without uvx and leaves the KB in B0", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: uvx is not on PATH. Install uv, then rerun `kb enable search`.\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(`schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b0
+engine:
+  basicMemory:
+    state: disabled
+    project: null
+lastReflectAt: null
+`);
+  expect((await harness.runKb(["status", "--kb", "research"])).stdout).toContain("Arm: b0\nEngine: disabled");
+});
+
+test("kb enable search reports install-check failure and leaves the KB in B0", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await harness.writeFakeExecutable(
+    "uvx",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'uvx 0.0.0'; exit 0; fi\necho 'Basic Memory install failed' >&2\nexit 2\n",
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: Basic Memory install check failed. Basic Memory install failed\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+});
+
+test("kb enable search reports reindex failure and leaves the KB in B0", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await harness.writeFakeExecutable(
+    "bm",
+    "#!/bin/sh\nprintf 'bm %s\\n' \"$*\" >> \"$HOME/engine-calls\"\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\necho 'reindex failed' >&2\nexit 1\n",
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: Basic Memory reindex failed. reindex failed\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+});
+
 test("engineless loop new add note search read status works with no Engine installed", async () => {
   await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
   const source = join(harness.cwd, "source.md");
@@ -559,4 +710,17 @@ async function listTree(root: string): Promise<string[]> {
   return entries
     .map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`)
     .sort();
+}
+
+function indexWithEntries(count: number): string {
+  const lines = [
+    "# KB Index",
+    "",
+    "Line format:",
+    "- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>",
+  ];
+  for (let i = 1; i <= count; i += 1) {
+    lines.push(`- [[memories/memory-${i}.md|Memory ${i}]] | category: research | summary: Entry ${i}.`);
+  }
+  return `${lines.join("\n")}\n`;
 }

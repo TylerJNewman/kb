@@ -7,6 +7,7 @@ export const VERSION = "0.0.0";
 
 const EXIT_USAGE = 64;
 const EXIT_UNAVAILABLE = 69;
+const SEARCH_ADVISOR_INDEX_ENTRY_THRESHOLD = 3;
 
 const PRODUCT_COMMANDS = new Set([
   "new",
@@ -79,6 +80,10 @@ export async function main(argv: string[]): Promise<number> {
 
   if (parsed.command === "list") {
     return listKbs();
+  }
+
+  if (parsed.command === "enable") {
+    return enableKb(parsed.kbName, parsed.args);
   }
 
   if (parsed.command === "status") {
@@ -361,6 +366,7 @@ async function statusKb(kbName: string | null): Promise<number> {
   const config = await readKbConfig(target.path);
   const counts = await countKbFiles(target.path);
   const health = await healthSummary(target.path);
+  const advisor = advisorSuggestions(config, counts);
 
   process.stdout.write(`KB: ${target.name}
 Path: ${target.path}
@@ -372,8 +378,56 @@ Index entries: ${counts.indexEntries}
 Index size: ${counts.indexBytes} bytes
 Health: ${health}
 Advisor:
-- No suggestions.
+${advisor}
 `);
+  return 0;
+}
+
+async function enableKb(kbName: string | null, args: string[]): Promise<number> {
+  if (args.length !== 1 || args[0] !== "search") {
+    writeError("usage: kb enable search");
+    return EXIT_USAGE;
+  }
+
+  const target = await resolveTargetKb(kbName);
+  if (target === null) {
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    return EXIT_USAGE;
+  }
+
+  const config = await readKbConfig(target.path);
+  if (config.engineState === "enabled") {
+    process.stdout.write(`Search already enabled for ${target.name}.\n`);
+    return 0;
+  }
+
+  if (!(await commandAvailable("bm"))) {
+    if (!(await commandAvailable("uvx"))) {
+      writeError("cannot enable search: uvx is not on PATH. Install uv, then rerun `kb enable search`.");
+      return EXIT_UNAVAILABLE;
+    }
+
+    const installed = await runExternal("uvx", ["basic-memory", "--version"], target.path);
+    if (installed.code !== 0) {
+      writeError(`cannot enable search: Basic Memory install check failed. ${firstOutputLine(installed)}`);
+      return EXIT_UNAVAILABLE;
+    }
+  }
+
+  const added = await runExternal("bm", ["project", "add", target.name, target.path], target.path);
+  if (added.code !== 0) {
+    writeError(`cannot enable search: Basic Memory project add failed. ${firstOutputLine(added)}`);
+    return EXIT_UNAVAILABLE;
+  }
+
+  const reindexed = await runExternal("bm", ["reindex", "--project", target.name, "--search"], target.path);
+  if (reindexed.code !== 0) {
+    writeError(`cannot enable search: Basic Memory reindex failed. ${firstOutputLine(reindexed)}`);
+    return EXIT_UNAVAILABLE;
+  }
+
+  await writeKbConfig(target.path, { arm: "b1", engineState: "enabled", engineProject: target.name });
+  process.stdout.write(`Search enabled for ${target.name}.\n`);
   return 0;
 }
 
@@ -620,14 +674,29 @@ async function appendLogEntry(kbPath: string, verb: string, title: string): Prom
 type KbConfig = {
   arm: string;
   engineState: string;
+  engineProject: string | null;
 };
 
 async function readKbConfig(kbPath: string): Promise<KbConfig> {
   const text = await readFile(join(kbPath, "kb.yaml"), "utf8");
+  const project = readYamlScalar(text, "project");
   return {
     arm: readYamlScalar(text, "arm") ?? "unknown",
     engineState: readYamlScalar(text, "state") ?? "unknown",
+    engineProject: project === "null" ? null : project,
   };
+}
+
+async function writeKbConfig(kbPath: string, config: KbConfig): Promise<void> {
+  await writeFile(join(kbPath, "kb.yaml"), `schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: ${config.arm}
+engine:
+  basicMemory:
+    state: ${config.engineState}
+    project: ${config.engineProject ?? "null"}
+lastReflectAt: null
+`);
 }
 
 function readYamlScalar(text: string, key: string): string | null {
@@ -655,6 +724,13 @@ async function countKbFiles(kbPath: string): Promise<KbCounts> {
     indexEntries: indexEntryLines(index).length,
     indexBytes: Buffer.byteLength(index),
   };
+}
+
+function advisorSuggestions(config: KbConfig, counts: KbCounts): string {
+  if (config.engineState !== "enabled" && counts.indexEntries >= SEARCH_ADVISOR_INDEX_ENTRY_THRESHOLD) {
+    return `- Try \`kb enable search\`: ${counts.indexEntries} index entries make hybrid search more useful than plain file search.`;
+  }
+  return "- No suggestions.";
 }
 
 async function countFiles(path: string): Promise<number> {
@@ -1066,6 +1142,41 @@ async function runSilent(cmd: string, args: string[], cwd: string): Promise<numb
   } catch {
     return 127;
   }
+}
+
+async function commandAvailable(cmd: string): Promise<boolean> {
+  return (await runExternal(cmd, ["--version"], process.cwd())).code !== 127;
+}
+
+type ExternalRun = {
+  code: number;
+  stdout: string;
+  stderr: string;
+};
+
+async function runExternal(cmd: string, args: string[], cwd: string): Promise<ExternalRun> {
+  try {
+    const proc = Bun.spawn([cmd, ...args], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { code, stdout, stderr };
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return { code: 127, stdout: "", stderr: "" };
+    }
+    throw error;
+  }
+}
+
+function firstOutputLine(run: ExternalRun): string {
+  return `${run.stderr}\n${run.stdout}`.split("\n").map((line) => line.trim()).find(Boolean) ?? `exit ${run.code}`;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
