@@ -67,12 +67,12 @@ test("bad flag exits non-zero and writes stderr only", async () => {
 });
 
 test("unimplemented product commands are router stubs", async () => {
-  const result = await harness.runKb(["search"]);
+  const result = await harness.runKb(["reflect"]);
 
   expect(result).toEqual({
     code: 69,
     stdout: "",
-    stderr: "kb: command not implemented in this slice: search\n",
+    stderr: "kb: command not implemented in this slice: reflect\n",
   });
 });
 
@@ -234,6 +234,14 @@ test("--kb resolves from an unrelated cwd and missing targets fail clearly", asy
     stdout: `KB: research
 Path: ${join(harness.home, "kb", "research")}
 Arm: b0
+Engine: disabled
+Sources: 0
+Memories: 0
+Index entries: 0
+Index size: 111 bytes
+Health: ok
+Advisor:
+- No suggestions.
 `,
     stderr: "",
   });
@@ -258,6 +266,14 @@ test("cwd inside a KB is auto-detected before default fallback", async () => {
     stdout: `KB: papers
 Path: ${join(harness.home, "kb", "papers")}
 Arm: b0
+Engine: disabled
+Sources: 0
+Memories: 0
+Index entries: 0
+Index size: 111 bytes
+Health: ok
+Advisor:
+- No suggestions.
 `,
     stderr: "",
   });
@@ -388,6 +404,134 @@ test("kb read <ref> returns the memory and points at the tiered read order", asy
   expect(result.stdout).toContain("Tiered read order: index.md -> executive summary -> derivatives in memories/ -> raw sources only when needed.");
   expect(result.stdout).toContain("title: Example Memory");
   expect(result.stdout).toContain("- [summary] TODO #research");
+});
+
+test("kb search returns citation-ready refs and appends a query log entry", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "memories", "alpha.md"), `---
+title: Alpha Memory
+type: note
+tags:
+  - research
+permalink: alpha
+---
+
+## Summary
+
+Alpha explains retrieval loops.
+`);
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
+- [[memories/alpha.md|Alpha Memory]] | category: research | summary: Retrieval loops and citations.
+`);
+
+  const result = await harness.runKb(["search", "retrieval", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: `Search results
+KB: research
+Query: retrieval
+Results: 1
+
+1. memories/alpha.md | Alpha Memory
+   Source: index.md
+   Match: - [[memories/alpha.md|Alpha Memory]] | category: research | summary: Retrieval loops and citations.
+`,
+    stderr: "",
+  });
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("query | retrieval");
+});
+
+test("kb status prints counts, health, and an empty Advisor slot for fixture state", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "raw", "source.md"), "# Source\n");
+  await writeFile(join(kbDir, "memories", "alpha.md"), `---
+title: Alpha Memory
+type: note
+tags:
+  - research
+permalink: alpha
+---
+`);
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
+- [[memories/alpha.md|Alpha Memory]] | category: research | summary: Retrieval loops.
+`);
+
+  const result = await harness.runKb(["status", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: `KB: research
+Path: ${kbDir}
+Arm: b0
+Engine: disabled
+Sources: 1
+Memories: 1
+Index entries: 1
+Index size: 197 bytes
+Health: ok
+Advisor:
+- No suggestions.
+`,
+    stderr: "",
+  });
+  expect(result.stdout).not.toContain("reflect");
+  expect(result.stdout).not.toContain("enable search");
+});
+
+test("engineless loop new add note search read status works with no Engine installed", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  const source = join(harness.cwd, "source.md");
+  await writeFile(source, "# Source\n\nFact one supports the minimal loop.\n");
+
+  expect(await harness.runKb(["new", "research"])).toEqual({ code: 0, stdout: "", stderr: "" });
+  const added = await harness.runKb(["add", source, "--kb", "research"]);
+  expect(added.code).toBe(0);
+  expect(await harness.runKb(["note", "Loop Memory", "--kb", "research"])).toEqual({
+    code: 0,
+    stdout: "Created memories/loop-memory.md\n",
+    stderr: "",
+  });
+
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "memories", "loop-memory.md"), `---
+title: Loop Memory
+type: note
+tags:
+  - research
+permalink: loop-memory
+---
+
+## Summary
+
+Fact one supports the minimal engineless loop.
+`);
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
+- [[memories/loop-memory.md|Loop Memory]] | category: research | summary: Fact one supports the loop.
+`);
+
+  const searched = await harness.runKb(["search", "fact one", "--kb", "research"]);
+  const read = await harness.runKb(["read", "loop-memory", "--kb", "research"]);
+  const status = await harness.runKb(["status", "--kb", "research"]);
+
+  expect(searched.code).toBe(0);
+  expect(searched.stdout).toContain("1. memories/loop-memory.md | Loop Memory");
+  expect(read.code).toBe(0);
+  expect(read.stdout).toContain("title: Loop Memory");
+  expect(status.code).toBe(0);
+  expect(status.stdout).toContain("Engine: disabled");
+  expect(status.stdout).toContain("Advisor:\n- No suggestions.");
 });
 
 test("daily commands do not mutate existing raw contents", async () => {

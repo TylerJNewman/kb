@@ -85,6 +85,10 @@ export async function main(argv: string[]): Promise<number> {
     return statusKb(parsed.kbName);
   }
 
+  if (parsed.command === "search") {
+    return searchKb(parsed.kbName, parsed.args);
+  }
+
   if (parsed.command === "add") {
     return addSource(parsed.kbName, parsed.args);
   }
@@ -354,7 +358,51 @@ async function statusKb(kbName: string | null): Promise<number> {
     return EXIT_USAGE;
   }
 
-  process.stdout.write(`KB: ${target.name}\nPath: ${target.path}\nArm: b0\n`);
+  const config = await readKbConfig(target.path);
+  const counts = await countKbFiles(target.path);
+  const health = await healthSummary(target.path);
+
+  process.stdout.write(`KB: ${target.name}
+Path: ${target.path}
+Arm: ${config.arm}
+Engine: ${config.engineState}
+Sources: ${counts.sources}
+Memories: ${counts.memories}
+Index entries: ${counts.indexEntries}
+Index size: ${counts.indexBytes} bytes
+Health: ${health}
+Advisor:
+- No suggestions.
+`);
+  return 0;
+}
+
+async function searchKb(kbName: string | null, args: string[]): Promise<number> {
+  if (args.length === 0) {
+    writeError("usage: kb search <query>");
+    return EXIT_USAGE;
+  }
+
+  const query = args.join(" ").trim();
+  if (query.length === 0) {
+    writeError("query is required");
+    return EXIT_USAGE;
+  }
+  if (!isSingleLine(query)) {
+    writeError("query must be a single line");
+    return EXIT_USAGE;
+  }
+
+  const target = await resolveTargetKb(kbName);
+  if (target === null) {
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    return EXIT_USAGE;
+  }
+
+  const results = await searchFiles(target.path, query);
+  await appendLogEntry(target.path, "query", query);
+
+  process.stdout.write(renderSearchResults(target.name, query, results));
   return 0;
 }
 
@@ -567,6 +615,197 @@ async function writeRawIfMissing(kbPath: string, rawFile: string, content: strin
 
 async function appendLogEntry(kbPath: string, verb: string, title: string): Promise<void> {
   await appendFile(join(kbPath, "log.md"), `## [${todayIso()}] ${verb} | ${title}\n`);
+}
+
+type KbConfig = {
+  arm: string;
+  engineState: string;
+};
+
+async function readKbConfig(kbPath: string): Promise<KbConfig> {
+  const text = await readFile(join(kbPath, "kb.yaml"), "utf8");
+  return {
+    arm: readYamlScalar(text, "arm") ?? "unknown",
+    engineState: readYamlScalar(text, "state") ?? "unknown",
+  };
+}
+
+function readYamlScalar(text: string, key: string): string | null {
+  const match = new RegExp(`^\\s*${key}:\\s*(.+)$`, "m").exec(text);
+  return match?.[1]?.trim() ?? null;
+}
+
+type KbCounts = {
+  sources: number;
+  memories: number;
+  indexEntries: number;
+  indexBytes: number;
+};
+
+async function countKbFiles(kbPath: string): Promise<KbCounts> {
+  const [sources, memories, index] = await Promise.all([
+    countFiles(join(kbPath, "raw")),
+    countMarkdownFiles(join(kbPath, "memories")),
+    readOptionalFile(join(kbPath, "index.md")),
+  ]);
+
+  return {
+    sources,
+    memories,
+    indexEntries: indexEntryLines(index).length,
+    indexBytes: Buffer.byteLength(index),
+  };
+}
+
+async function countFiles(path: string): Promise<number> {
+  try {
+    return (await readdir(path, { withFileTypes: true })).filter((entry) => entry.isFile()).length;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return 0;
+    }
+    throw error;
+  }
+}
+
+async function countMarkdownFiles(path: string): Promise<number> {
+  try {
+    return (await readdir(path, { withFileTypes: true })).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).length;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return 0;
+    }
+    throw error;
+  }
+}
+
+async function readOptionalFile(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  }
+}
+
+async function healthSummary(kbPath: string): Promise<string> {
+  const required = ["kb.yaml", "index.md", "log.md", "raw", "memories"];
+  for (const name of required) {
+    if (!(await exists(join(kbPath, name)))) {
+      return `missing ${name}`;
+    }
+  }
+  return "ok";
+}
+
+type SearchResult = {
+  ref: string;
+  title: string;
+  source: "index.md" | "memory";
+  match: string;
+  score: number;
+};
+
+async function searchFiles(kbPath: string, query: string): Promise<SearchResult[]> {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const byRef = new Map<string, SearchResult>();
+  const index = await readFile(join(kbPath, "index.md"), "utf8");
+
+  for (const line of indexEntryLines(index)) {
+    const parsed = parseIndexLine(line);
+    if (parsed === null) {
+      continue;
+    }
+    const score = scoreText(line, terms);
+    if (score > 0) {
+      byRef.set(parsed.ref, {
+        ref: parsed.ref,
+        title: parsed.title,
+        source: "index.md",
+        match: line,
+        score,
+      });
+    }
+  }
+
+  for (const entry of await readdir(join(kbPath, "memories"), { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) {
+      continue;
+    }
+    const ref = `memories/${entry.name}`;
+    const text = await readFile(join(kbPath, ref), "utf8");
+    const score = scoreText(text, terms);
+    if (score === 0) {
+      continue;
+    }
+
+    const current = byRef.get(ref);
+    if (current !== undefined) {
+      current.score += score;
+      if (current.source !== "index.md") {
+        current.source = "memory";
+        current.match = firstMatchingLine(text, terms);
+      }
+      continue;
+    }
+
+    byRef.set(ref, {
+      ref,
+      title: titleFromMemory(text) ?? titleFromSlug(entry.name.slice(0, -".md".length)),
+      source: "memory",
+      match: firstMatchingLine(text, terms),
+      score,
+    });
+  }
+
+  return [...byRef.values()].sort((a, b) => b.score - a.score || a.ref.localeCompare(b.ref));
+}
+
+function renderSearchResults(kbName: string, query: string, results: SearchResult[]): string {
+  const lines = [`Search results`, `KB: ${kbName}`, `Query: ${query}`, `Results: ${results.length}`];
+  if (results.length === 0) {
+    return `${lines.join("\n")}\n`;
+  }
+
+  lines.push("");
+  results.forEach((result, index) => {
+    lines.push(`${index + 1}. ${result.ref} | ${result.title}`);
+    lines.push(`   Source: ${result.source}`);
+    lines.push(`   Match: ${result.match}`);
+  });
+  return `${lines.join("\n")}\n`;
+}
+
+function indexEntryLines(index: string): string[] {
+  return index.split("\n").filter((line) => line.startsWith("- [[") && !line.includes("<file>"));
+}
+
+function parseIndexLine(line: string): { ref: string; title: string } | null {
+  const match = /^- \[\[([^|\]]+)\|([^\]]+)\]\]/.exec(line);
+  if (match === null) {
+    return null;
+  }
+  return { ref: match[1], title: match[2] };
+}
+
+function scoreText(text: string, terms: string[]): number {
+  const lower = text.toLowerCase();
+  return terms.reduce((score, term) => score + lower.split(term).length - 1, 0);
+}
+
+function firstMatchingLine(text: string, terms: string[]): string {
+  const line = text.split("\n").find((candidate) => {
+    const lower = candidate.toLowerCase();
+    return terms.some((term) => lower.includes(term));
+  });
+  return line?.trim() ?? "";
+}
+
+function titleFromMemory(text: string): string | null {
+  const title = readYamlScalar(text, "title");
+  return title === null || title.length === 0 ? null : title;
 }
 
 function ingestPlaybook(staged: StagedSource): string {
