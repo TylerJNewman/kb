@@ -17,4 +17,9 @@ kb search "topic"
 # Have several KBs? Target one with `--in <name>`, or cd into its folder.
 ```
 
-That flow is `new -> add -> AI writes from the playbook -> search -> status`. The full onboarding guide is in [docs/START-HERE.md](https://github.com/TylerJNewman/kb/blob/main/docs/START-HERE.md), and the local HTML version is [site/index.html](https://github.com/TylerJNewman/kb/blob/main/site/index.html).
+That flow is `new -> add -> AI writes from the playbook -> search -> status`.
+
+## Learn more
+
+- **Visual walkthrough** (ASCII diagrams + toy runs): [docs/WALKTHROUGH.md](https://github.com/TylerJNewman/kb/blob/main/docs/WALKTHROUGH.md) · Tufte-style page → https://tylerjnewman.github.io/kb/walkthrough.html
+- **Onboarding guide** (Grug + Feynman, with a quiz): [docs/START-HERE.md](https://github.com/TylerJNewman/kb/blob/main/docs/START-HERE.md) · interactive page → https://tylerjnewman.github.io/kb/
