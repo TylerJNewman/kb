@@ -15,6 +15,15 @@ A minimal, self-documenting CLI (`kb`) that an AI agent drives to scaffold and g
 - **Engine = Basic Memory, wrapped out-of-process, never forked, lazy-installed** via `uvx basic-memory` only when a B-arm needs search. Talk to it via `bm tool <cmd> --json`. The npm package carries no Python. Reference checkout: `/Users/tyler/code/mcp/basic-memory` (see its `NOTE-FORMAT.md`).
 - **Arms (v1):** `wiki` (eager, engineless), `b0` (default, lazy, engineless), `b1` (b0 + engine). `--arm b2` is DEFERRED — reject it with a "deferred" message. Maintenance reminders = the Advisor (default-on), not a separate arm.
 
+## Basic Memory command contract (from the Slice 0b spike — USE THESE, not guesses)
+The spike (`docs/spikes/basic-memory-contract.md`, fixtures in `test/fixtures/basic-memory-contract/`) captured real Basic Memory 0.22.1 behavior. Engine slices MUST match:
+- Install/run: `uvx basic-memory ...` (or `bm` if installed on PATH).
+- Add project: `bm project add <name> <path>`.
+- Index (there is NO `bm sync`): `bm reindex --project <name> --search`.
+- Search: `bm tool search-notes "<query>" --project <name>` — **prints JSON by default; does NOT accept `--json`/`--format json`** (passing them errors). Optional `--entity-type observation|relation`.
+- Status: `bm status --project <name> --json` (can time out if no server running).
+- Fake `uvx`/`bm` stubs in tests must replay the fixtures under `test/fixtures/basic-memory-contract/`.
+
 ## Note-format contract (must stay Basic Memory compatible)
 Memories are markdown with: frontmatter (`title`, `type`, `tags`, `permalink`); observations as `- [category] content #tag`; relations as `- relation_type [[Target]]`. This is a tested contract — B0 memories must be B1-importable with zero migration.
 
