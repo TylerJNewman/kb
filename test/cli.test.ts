@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
@@ -63,16 +63,6 @@ test("bad flag exits non-zero and writes stderr only", async () => {
     code: 64,
     stdout: "",
     stderr: "kb: unknown flag: --wat\n",
-  });
-});
-
-test("unimplemented product commands are router stubs", async () => {
-  const result = await harness.runKb(["reflect"]);
-
-  expect(result).toEqual({
-    code: 69,
-    stdout: "",
-    stderr: "kb: command not implemented in this slice: reflect\n",
   });
 });
 
@@ -549,9 +539,147 @@ test("daily commands do not mutate existing raw contents", async () => {
   expect(await readFile(rawPath, "utf8")).toBe("original raw bytes\n");
 });
 
+test("kb reflect reports memories changed since last reflect, writes marker, logs, and prints playbook", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "kb.yaml"), `schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b0
+engine:
+  basicMemory:
+    state: disabled
+    project: null
+lastReflectAt: 2026-07-01T00:00:00.000Z
+`);
+  await writeMemory(kbDir, "old.md", "Old Memory", "old");
+  await writeMemory(kbDir, "new.md", "New Memory", "new");
+  await utimes(join(kbDir, "memories", "old.md"), new Date("2026-06-30T12:00:00.000Z"), new Date("2026-06-30T12:00:00.000Z"));
+  await utimes(join(kbDir, "memories", "new.md"), new Date("2026-07-02T12:00:00.000Z"), new Date("2026-07-02T12:00:00.000Z"));
+
+  const result = await harness.run("kb", ["reflect", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+  });
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: `Reflect playbook
+Changed since last reflect: 1
+- memories/new.md | New Memory
+
+Agent half:
+1. Read exactly the Memory refs listed above.
+2. Write any useful cross-memory synthesis back into memories/ as Basic Memory-compatible Memories.
+3. Add or update index.md lines only for Memories you actually create or revise.
+4. Do not claim contradiction detection, stale-fact judgment, or semantic consolidation as guaranteed by kb reflect.
+`,
+    stderr: "",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("lastReflectAt: 2026-07-07T12:00:00.000Z");
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("## [2026-07-07] reflect | 1 memories");
+});
+
+test("kb defrag reports deterministic cleanup candidates and mutates nothing", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeMemory(kbDir, "alpha.md", "Alpha", "alpha");
+  await writeMemory(kbDir, "alpha-copy.md", "Alpha Copy", "alpha");
+  await writeMemory(kbDir, "unindexed.md", "Unindexed", "unindexed");
+  await writeMemory(kbDir, "old-fact.md", "Old Fact", "old-fact", "superseded_by: new-fact\n");
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
+- [[memories/alpha.md|Alpha]] | category: research | summary: Alpha.
+- [[memories/missing.md|Missing]] | category: research | summary: Missing.
+`);
+  const before = await snapshotKb(kbDir);
+
+  const result = await harness.runKb(["defrag", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: `Defrag playbook
+Deterministic candidates:
+Duplicate slugs:
+- alpha: memories/alpha-copy.md, memories/alpha.md
+
+Orphan memories not in index.md:
+- memories/alpha-copy.md
+- memories/old-fact.md
+- memories/unindexed.md
+
+Dangling index refs:
+- memories/missing.md
+
+Archivable superseded refs:
+- memories/old-fact.md -> archive/memories/old-fact.md
+
+
+Agent half:
+1. Review only the deterministic candidates above.
+2. For superseded facts, move the old Memory to archive/memories/ and add a replacement note; do not delete it.
+3. Fix index.md so every indexed Memory exists and every kept Memory has one catalog line.
+4. Do not claim kb defrag found semantic duplicates, contradictions, or stale facts.
+`,
+    stderr: "",
+  });
+  expect(await snapshotKb(kbDir)).toEqual(before);
+});
+
+test("Advisor suggests reflect only after the threshold elapses", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeMemory(kbDir, "alpha.md", "Alpha", "alpha");
+
+  const reflected = await harness.run("kb", ["reflect", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+  });
+  expect(reflected.code).toBe(0);
+
+  const fresh = await harness.run("kb", ["status", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-08T12:00:00.000Z" },
+  });
+  const stale = await harness.run("kb", ["status", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-22T12:00:00.000Z" },
+  });
+
+  expect(fresh.stdout).toContain("Advisor:\n- No suggestions.\n");
+  expect(stale.stdout).toContain("Advisor:\n- Run `kb reflect`: last reflect was 15 days ago.\n");
+});
+
 async function scaffoldResearchKb(): Promise<void> {
   await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
   await harness.runKb(["new", "research"]);
+}
+
+async function writeMemory(kbDir: string, file: string, title: string, permalink: string, extraFrontmatter = ""): Promise<void> {
+  await writeFile(join(kbDir, "memories", file), `---
+title: ${title}
+type: note
+tags:
+  - research
+permalink: ${permalink}
+${extraFrontmatter}---
+
+## Summary
+
+${title}
+`);
+}
+
+async function snapshotKb(kbDir: string): Promise<Record<string, string>> {
+  const files = ["index.md", "log.md", "kb.yaml"];
+  const memories = await readdir(join(kbDir, "memories"));
+  const snapshot: Record<string, string> = {};
+  for (const file of files) {
+    snapshot[file] = await readFile(join(kbDir, file), "utf8");
+  }
+  for (const file of memories.sort()) {
+    const path = join("memories", file);
+    snapshot[path] = await readFile(join(kbDir, path), "utf8");
+    snapshot[`${path}:mtime`] = String((await stat(join(kbDir, path))).mtimeMs);
+  }
+  return snapshot;
 }
 
 async function listTree(root: string): Promise<string[]> {

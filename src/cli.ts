@@ -105,6 +105,14 @@ export async function main(argv: string[]): Promise<number> {
     return readMemory(parsed.kbName, parsed.args);
   }
 
+  if (parsed.command === "reflect") {
+    return reflectKb(parsed.kbName, parsed.args);
+  }
+
+  if (parsed.command === "defrag") {
+    return defragKb(parsed.kbName, parsed.args);
+  }
+
   writeError(`command not implemented in this slice: ${parsed.command}`);
   return EXIT_UNAVAILABLE;
 }
@@ -361,6 +369,7 @@ async function statusKb(kbName: string | null): Promise<number> {
   const config = await readKbConfig(target.path);
   const counts = await countKbFiles(target.path);
   const health = await healthSummary(target.path);
+  const advisor = advisorSuggestions(config);
 
   process.stdout.write(`KB: ${target.name}
 Path: ${target.path}
@@ -372,7 +381,7 @@ Index entries: ${counts.indexEntries}
 Index size: ${counts.indexBytes} bytes
 Health: ${health}
 Advisor:
-- No suggestions.
+${renderAdvisor(advisor)}
 `);
   return 0;
 }
@@ -515,6 +524,43 @@ async function readMemory(kbName: string | null, args: string[]): Promise<number
   return 0;
 }
 
+async function reflectKb(kbName: string | null, args: string[]): Promise<number> {
+  if (args.length !== 0) {
+    writeError("usage: kb reflect");
+    return EXIT_USAGE;
+  }
+
+  const target = await resolveTargetKb(kbName);
+  if (target === null) {
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    return EXIT_USAGE;
+  }
+
+  const config = await readKbConfig(target.path);
+  const changed = await changedMemoriesSince(target.path, config.lastReflectAt);
+  const now = nowInstant();
+  await writeLastReflectAt(target.path, now);
+  await appendLogEntry(target.path, "reflect", `${changed.length} memories`);
+  process.stdout.write(reflectPlaybook(changed));
+  return 0;
+}
+
+async function defragKb(kbName: string | null, args: string[]): Promise<number> {
+  if (args.length !== 0) {
+    writeError("usage: kb defrag");
+    return EXIT_USAGE;
+  }
+
+  const target = await resolveTargetKb(kbName);
+  if (target === null) {
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    return EXIT_USAGE;
+  }
+
+  process.stdout.write(defragPlaybook(await defragCandidates(target.path)));
+  return 0;
+}
+
 function isSafeKbName(name: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && name !== "." && name !== "..";
 }
@@ -620,13 +666,16 @@ async function appendLogEntry(kbPath: string, verb: string, title: string): Prom
 type KbConfig = {
   arm: string;
   engineState: string;
+  lastReflectAt: string | null;
 };
 
 async function readKbConfig(kbPath: string): Promise<KbConfig> {
   const text = await readFile(join(kbPath, "kb.yaml"), "utf8");
+  const lastReflectAt = readYamlScalar(text, "lastReflectAt");
   return {
     arm: readYamlScalar(text, "arm") ?? "unknown",
     engineState: readYamlScalar(text, "state") ?? "unknown",
+    lastReflectAt: lastReflectAt === null || lastReflectAt === "null" ? null : lastReflectAt,
   };
 }
 
@@ -808,6 +857,121 @@ function titleFromMemory(text: string): string | null {
   return title === null || title.length === 0 ? null : title;
 }
 
+type MemoryInfo = {
+  ref: string;
+  title: string;
+  slug: string;
+  supersededBy: string | null;
+  mtimeMs: number;
+};
+
+async function listMemories(kbPath: string): Promise<MemoryInfo[]> {
+  const memories: MemoryInfo[] = [];
+  for (const entry of await readdir(join(kbPath, "memories"), { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) {
+      continue;
+    }
+    const ref = `memories/${entry.name}`;
+    const path = join(kbPath, ref);
+    const [text, metadata] = await Promise.all([readFile(path, "utf8"), stat(path)]);
+    memories.push({
+      ref,
+      title: titleFromMemory(text) ?? titleFromSlug(entry.name.slice(0, -".md".length)),
+      slug: readYamlScalar(text, "permalink") ?? entry.name.slice(0, -".md".length),
+      supersededBy: readYamlScalar(text, "superseded_by"),
+      mtimeMs: metadata.mtimeMs,
+    });
+  }
+  return memories.sort((a, b) => a.ref.localeCompare(b.ref));
+}
+
+async function changedMemoriesSince(kbPath: string, lastReflectAt: string | null): Promise<MemoryInfo[]> {
+  const cutoff = lastReflectAt === null ? -Infinity : Date.parse(lastReflectAt);
+  return (await listMemories(kbPath)).filter((memory) => memory.mtimeMs > cutoff);
+}
+
+async function writeLastReflectAt(kbPath: string, value: string): Promise<void> {
+  const path = join(kbPath, "kb.yaml");
+  const text = await readFile(path, "utf8");
+  const next = /^lastReflectAt: .+$/m.test(text)
+    ? text.replace(/^lastReflectAt: .+$/m, `lastReflectAt: ${value}`)
+    : `${text.trimEnd()}\nlastReflectAt: ${value}\n`;
+  await writeFile(path, next);
+}
+
+function reflectPlaybook(changed: MemoryInfo[]): string {
+  const lines = ["Reflect playbook", `Changed since last reflect: ${changed.length}`];
+  if (changed.length > 0) {
+    lines.push(...changed.map((memory) => `- ${memory.ref} | ${memory.title}`));
+  }
+  lines.push(
+    "",
+    "Agent half:",
+    "1. Read exactly the Memory refs listed above.",
+    "2. Write any useful cross-memory synthesis back into memories/ as Basic Memory-compatible Memories.",
+    "3. Add or update index.md lines only for Memories you actually create or revise.",
+    "4. Do not claim contradiction detection, stale-fact judgment, or semantic consolidation as guaranteed by kb reflect.",
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+type DefragCandidates = {
+  duplicateSlugs: Array<{ slug: string; refs: string[] }>;
+  orphanMemories: string[];
+  danglingIndexRefs: string[];
+  archivableSupersededRefs: string[];
+};
+
+async function defragCandidates(kbPath: string): Promise<DefragCandidates> {
+  const memories = await listMemories(kbPath);
+  const memoryRefs = new Set(memories.map((memory) => memory.ref));
+  const indexRefs = indexEntryLines(await readFile(join(kbPath, "index.md"), "utf8"))
+    .map((line) => parseIndexLine(line)?.ref)
+    .filter((ref): ref is string => ref !== undefined);
+  const indexRefSet = new Set(indexRefs);
+  const bySlug = new Map<string, string[]>();
+
+  for (const memory of memories) {
+    const refs = bySlug.get(memory.slug) ?? [];
+    refs.push(memory.ref);
+    bySlug.set(memory.slug, refs);
+  }
+
+  return {
+    duplicateSlugs: [...bySlug.entries()]
+      .filter(([, refs]) => refs.length > 1)
+      .map(([slug, refs]) => ({ slug, refs: refs.sort() }))
+      .sort((a, b) => a.slug.localeCompare(b.slug)),
+    orphanMemories: [...memoryRefs].filter((ref) => !indexRefSet.has(ref)).sort(),
+    danglingIndexRefs: indexRefs.filter((ref) => !memoryRefs.has(ref)).sort(),
+    archivableSupersededRefs: memories.filter((memory) => memory.supersededBy !== null).map((memory) => memory.ref).sort(),
+  };
+}
+
+function defragPlaybook(candidates: DefragCandidates): string {
+  return `Defrag playbook
+Deterministic candidates:
+Duplicate slugs:
+${renderCandidateLines(candidates.duplicateSlugs.map((candidate) => `${candidate.slug}: ${candidate.refs.join(", ")}`))}
+Orphan memories not in index.md:
+${renderCandidateLines(candidates.orphanMemories)}
+Dangling index refs:
+${renderCandidateLines(candidates.danglingIndexRefs)}
+Archivable superseded refs:
+${renderCandidateLines(candidates.archivableSupersededRefs.map((ref) => `${ref} -> archive/${ref}`))}
+
+Agent half:
+1. Review only the deterministic candidates above.
+2. For superseded facts, move the old Memory to archive/memories/ and add a replacement note; do not delete it.
+3. Fix index.md so every indexed Memory exists and every kept Memory has one catalog line.
+4. Do not claim kb defrag found semantic duplicates, contradictions, or stale facts.
+`;
+}
+
+function renderCandidateLines(lines: string[]): string {
+  return lines.length === 0 ? "- None\n" : `${lines.map((line) => `- ${line}`).join("\n")}\n`;
+}
+
 function ingestPlaybook(staged: StagedSource): string {
   const rawRef = `raw/${staged.rawFile}`;
   const memoryRef = `memories/${staged.memoryFile}`;
@@ -902,7 +1066,32 @@ function isSingleLine(value: string): boolean {
 }
 
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  return nowInstant().slice(0, 10);
+}
+
+function nowInstant(): string {
+  const value = process.env.KB_NOW;
+  const date = value === undefined ? new Date() : new Date(value);
+  return date.toISOString();
+}
+
+function advisorSuggestions(config: KbConfig): string[] {
+  if (config.lastReflectAt === null) {
+    return [];
+  }
+
+  const days = Math.floor((Date.parse(nowInstant()) - Date.parse(config.lastReflectAt)) / 86_400_000);
+  if (days >= 14) {
+    return [`Run \`kb reflect\`: last reflect was ${days} days ago.`];
+  }
+  return [];
+}
+
+function renderAdvisor(suggestions: string[]): string {
+  if (suggestions.length === 0) {
+    return "- No suggestions.";
+  }
+  return suggestions.map((suggestion) => `- ${suggestion}`).join("\n");
 }
 
 async function isInsideGitRepo(path: string): Promise<boolean> {

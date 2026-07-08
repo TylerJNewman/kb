@@ -15,7 +15,7 @@ export type KbHarness = {
   cwd: string;
   pathDir: string;
   runKb: (args: string[]) => Promise<KbRun>;
-  run: (cmd: string, args: string[], options?: { cwd?: string }) => Promise<KbRun>;
+  run: (cmd: string, args: string[], options?: { cwd?: string; env?: Record<string, string> }) => Promise<KbRun>;
   writeFakeExecutable: (name: string, body: string) => Promise<string>;
   listCwd: () => Promise<string[]>;
   cleanup: () => Promise<void>;
@@ -53,10 +53,10 @@ export async function createKbHarness(): Promise<KbHarness> {
     "#!/bin/sh\nexec \"$BUN_BIN\" \"$KB_BIN\" \"$@\"\n",
   );
 
-  const run = async (cmd: string, args: string[], options?: { cwd?: string }): Promise<KbRun> => {
+  const run = async (cmd: string, args: string[], options?: { cwd?: string; env?: Record<string, string> }): Promise<KbRun> => {
     const proc = Bun.spawn([cmd, ...args], {
       cwd: options?.cwd ?? cwd,
-      env,
+      env: { ...env, ...options?.env },
       stdout: "pipe",
       stderr: "pipe",
     });
