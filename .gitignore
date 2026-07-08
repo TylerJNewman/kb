@@ -4,3 +4,4 @@ dist/
 *.log
 .packx_cache/
 .oracle/
+.worktrees/
