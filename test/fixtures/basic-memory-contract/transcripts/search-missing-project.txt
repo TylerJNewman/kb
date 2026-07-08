@@ -1,0 +1,3 @@
+$ bm tool search-notes "durable observation" --project missing-project
+Error during search: Cloud routing requested but no credentials found. Run 'bm cloud api-key save <key>' or 'bm cloud login' first.
+exit=1

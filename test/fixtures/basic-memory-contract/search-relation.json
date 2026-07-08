@@ -1,0 +1,22 @@
+{
+  "results": [
+    {
+      "title": "Example Memory -> Target Memory",
+      "type": "relation",
+      "score": 1.0,
+      "entity": "example-memory",
+      "permalink": "example-memory/relates-to/target-memory",
+      "file_path": "memories/example-memory.md",
+      "metadata": {},
+      "entity_id": 1,
+      "relation_id": 1,
+      "from_entity": "example-memory",
+      "to_entity": "target-memory",
+      "relation_type": "relates_to"
+    }
+  ],
+  "current_page": 1,
+  "page_size": 10,
+  "total": 0,
+  "has_more": false
+}

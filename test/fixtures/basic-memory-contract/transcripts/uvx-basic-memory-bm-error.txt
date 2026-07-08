@@ -1,0 +1,7 @@
+$ uvx basic-memory bm --version
+Usage: basic-memory [OPTIONS] COMMAND [ARGS]...
+Try 'basic-memory --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ No such command 'bm'.                                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+exit=2

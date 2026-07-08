@@ -1,0 +1,3 @@
+$ bm project add kb-contract-spike /tmp/kb-bm-contract/kb
+Project 'kb-contract-spike' added successfully
+exit=0
