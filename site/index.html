@@ -511,7 +511,8 @@
         </div>
         <div class="terminal-card" aria-label="kb terminal preview">
           <div class="terminal-top" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
-          <pre><code>$ bunx @tylerjnewman/kb new research
+          <pre><code>$ npm i -g @tylerjnewman/kb
+$ kb new research
 creates ~/kb/research/
 
 $ kb add paper.txt
@@ -623,7 +624,8 @@ writes memory to memories/</code></pre>
           <strong>Copy and run</strong>
           <button class="copy" id="copyCode" type="button">Copy</button>
         </div>
-        <pre><code id="helloCode">bunx @tylerjnewman/kb new research          # make a knowledge base
+        <pre><code id="helloCode">npm i -g @tylerjnewman/kb
+kb new research     # make a knowledge base
 # creates ~/kb/research/ with the folders above
 
 echo "some paper text" > paper.txt
@@ -633,8 +635,8 @@ kb add paper.txt    # file it + get a playbook
 
 kb search "topic"   # ask against your notes
 
-# Your first KB is the default, so no --kb needed.
-# Have several? Target one with --kb &lt;name&gt;, or cd into its folder.
+# Your first KB is the default, so no --in needed.
+# Have several? Target one with --in &lt;name&gt;, or cd into its folder.
 
 kb status           # see Arm, counts, and Advisor suggestion</code></pre>
       </div>

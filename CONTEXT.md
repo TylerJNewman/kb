@@ -9,7 +9,7 @@ A folder of markdown a user owns, holding their accumulated knowledge, readable 
 _Avoid_: vault, second brain, memory store
 
 **Arm**:
-One of the system configurations a user can run: A (AI-kept wiki, engineless), B0 (Basic Memory conventions, engine not yet installed), B1 (Basic Memory engine, lazy synthesis), B2 (Basic Memory + scheduled reflect/defrag).
+One of the system configurations a user can run: A (AI-kept wiki, engineless), B0 (Basic Memory conventions, engine not yet installed), B1 (Basic Memory engine, lazy synthesis), B2 (Basic Memory + scheduled reflect/check).
 _Avoid_: mode, flavor, variant
 
 **Guide**:
@@ -20,11 +20,11 @@ Software that provides storage/index/search behind the CLI. Basic Memory is the 
 _Avoid_: backend, provider
 
 **Memory**:
-A synthesized note — the digested product of conversations, research, or resources. Not a raw source.
+A synthesized note — the digested product of conversations, research, or resources. Not a raw source. `kb draft <title...>` creates a blank Memory for the agent to write.
 _Avoid_: note (when the raw/derived distinction matters)
 
 **Raw source**:
-An immutable ingested document (article, paper, transcript). Agents read it, never edit it.
+An immutable added document (article, paper, transcript). Agents read it, never edit it.
 _Avoid_: original, archive file
 
 **Derivative**:
@@ -42,6 +42,12 @@ The default master folder (`~/kb/`) where `kb new` creates knowledge bases. A de
 
 **Registry**:
 The global list of KB locations plus a default KB (`~/.config/kb/config.yaml`); lets an agent reach any KB from anywhere. Rebuildable, never a master copy.
+
+**Target flag**:
+`--in <name>` targets a named KB from the Registry. Omit it to use the KB containing the current directory, then the default KB.
+
+**Check**:
+The maintenance verb (`kb check`) that prints deterministic structural candidates plus an agent review playbook. It does not prove semantic duplicates or contradictions.
 
 **Advisor**:
 The feed-forward mechanic: commands notice KB state and print a suggested next move with a one-line reason. Suggests only; never acts.

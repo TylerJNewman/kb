@@ -11,5 +11,5 @@ Our CLI needs Basic Memory's substrate (markdown notes, SQLite index, hybrid sea
 ## Consequences
 
 - Our note format must stay strictly compatible with Basic Memory's `NOTE-FORMAT.md` spec, or the A→B upgrade path lies. This is a contract to test in CI.
-- Basic Memory's skills (memory-notes, memory-reflect, memory-defrag, memory-schema) are plain markdown prompts — we adapt them freely rather than depending on them.
+- Basic Memory's skills (memory-notes, memory-reflect, memory-check, memory-schema) are plain markdown prompts — we adapt them freely rather than depending on them.
 - License boundary: we invoke Basic Memory as a separate process; we do not import or link its code.

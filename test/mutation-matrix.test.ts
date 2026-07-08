@@ -21,42 +21,42 @@ test("command mutation matrix pins KB-owned paths each command may change", asyn
   await expectAllowedMutation("add", async () => {
     const source = join(harness.cwd, "source.md");
     await writeFile(source, "# Source\n\nMatrix fact.\n");
-    return harness.runKb(["add", source, "--kb", "research"]);
+    return harness.runKb(["add", source, "--in", "research"]);
   }, ["log.md", /^raw\//]);
 
-  await expectAllowedMutation("note", () => harness.runKb(["note", "Matrix Memory", "--kb", "research"]), [
+  await expectAllowedMutation("draft", () => harness.runKb(["draft", "Matrix Memory", "--in", "research"]), [
     "memories/matrix-memory.md",
   ]);
 
-  await expectAllowedMutation("search", () => harness.runKb(["search", "matrix", "--kb", "research"]), ["log.md"], {
+  await expectAllowedMutation("search", () => harness.runKb(["search", "matrix", "--in", "research"]), ["log.md"], {
     memory: true,
     index: true,
   });
 
   await expectAllowedMutation("enable search", async () => {
     await writeEngineStubs();
-    return harness.runKb(["enable", "search", "--kb", "research"]);
+    return harness.runKb(["enable", "search", "--in", "research"]);
   }, ["kb.yaml"]);
 
-  await expectAllowedMutation("reflect", () => harness.run("kb", ["reflect", "--kb", "research"], {
+  await expectAllowedMutation("reflect", () => harness.run("kb", ["reflect", "--in", "research"], {
     env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
   }), ["kb.yaml", "log.md"], { memory: true });
 
-  await expectAllowedMutation("defrag", () => harness.runKb(["defrag", "--kb", "research"]), [], {
+  await expectAllowedMutation("check", () => harness.runKb(["check", "--in", "research"]), [], {
     memory: true,
     index: true,
   });
 
-  await expectAllowedMutation("lint", () => harness.run("kb", ["lint", "--kb", "research"], {
+  await expectAllowedMutation("check", () => harness.run("kb", ["check", "--in", "research"], {
     env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
   }), [], { arm: "wiki", memory: true, index: true });
 
-  await expectAllowedMutation("status", () => harness.runKb(["status", "--kb", "research"]), [], {
+  await expectAllowedMutation("status", () => harness.runKb(["status", "--in", "research"]), [], {
     memory: true,
     index: true,
   });
 
-  await expectAllowedMutation("read", () => harness.runKb(["read", "matrix-memory", "--kb", "research"]), [], {
+  await expectAllowedMutation("read", () => harness.runKb(["read", "matrix-memory", "--in", "research"]), [], {
     memory: true,
   });
 

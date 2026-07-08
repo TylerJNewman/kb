@@ -15,7 +15,7 @@
 
 A knowledge base needs two different jobs done:
 
-- **Thinking** — read a paper, understand it, write a good summary, notice it contradicts another note.
+- **Thinking** — read a paper, understand it, write a good summary, notice it may contradict another memory.
 - **Bookkeeping** — copy the file to the right folder, add a line to the index, stamp the log, never lose anything.
 
 Humans quit knowledge bases because the *bookkeeping* grows faster than the value. The AI is great at thinking but sloppy and forgetful at bookkeeping across sessions. So we split the two jobs:
@@ -36,7 +36,7 @@ Run one command, get a folder of plain markdown:
 ~/kb/research/
   raw/        ← original papers, never edited (the vault)
   memories/   ← AI-written summaries (the useful notes)
-  index.md    ← one line per note, the cheap map
+  index.md    ← one line per memory, the cheap map
   log.md      ← history: what you added, what you asked
   kb.yaml     ← settings
 ```
@@ -61,7 +61,7 @@ The thing that watches and suggests is called the **Advisor**. Rule: **it sugges
 
 ## Why "deep module" matters here
 
-The interface is tiny — a handful of verbs: `new, add, note, search, status, reflect`. Behind each verb sits a lot of careful bookkeeping.
+The interface is tiny — a handful of verbs: `new, add, draft, search, status, reflect`. Behind each verb sits a lot of careful bookkeeping.
 
 You learn six words; you get the whole system. That is **leverage**. You never think about index formats, log prefixes, or engine JSON — `kb` hides all of it. A small set of verbs is a feature, not a limitation.
 
@@ -102,7 +102,8 @@ Try to answer in your own words first, then check.
 Once published (`@tylerjnewman/kb` on npm), the whole first session:
 
 ```bash
-bunx @tylerjnewman/kb new research   # make a knowledge base
+npm i -g @tylerjnewman/kb
+kb new research   # make a knowledge base
 # → creates ~/kb/research/ and makes it your default KB
 
 echo "some paper text" > paper.txt
@@ -116,7 +117,7 @@ kb search "topic"     # ask against your notes
 
 That is it: **new → add → (AI writes) → search → status.** No database, no signup, no config.
 
-**Why no `--kb` flag here?** Your first KB becomes the *default*, so plain `kb add` / `kb status` act on it. You only need `--kb <name>` once you have **several** KBs and want to target a specific one (or `cd` into its folder — being inside a KB targets it automatically).
+**Why no `--in` flag here?** Your first KB becomes the *default*, so plain `kb add` / `kb status` act on it. You only need `--in <name>` once you have **several** KBs and want to target a specific one (or `cd` into its folder — being inside a KB targets it automatically).
 
 In Claude Code you do not even type these. You say *"add these three papers to my research KB"* and the agent runs the verbs and follows the playbooks for you.
 

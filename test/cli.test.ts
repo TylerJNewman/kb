@@ -22,8 +22,14 @@ test("kb --help exits 0 and writes the golden help surface to stdout", async () 
   expect(result.stderr).toBe("");
   expect(result.stdout).toContain("Create and grow local-first markdown knowledge bases.");
   expect(result.stdout).toContain("Usage:");
-  expect(result.stdout).toContain("kb [--kb <name>] <command> [flags]");
-  expect(result.stdout).toContain("Commands:\n  start new init list status add note search read log enable reflect defrag lint");
+  expect(result.stdout).toContain("kb <command> [args] [--in <name>]");
+  expect(result.stdout).toContain("Learning:");
+  expect(result.stdout).toContain("Create:");
+  expect(result.stdout).toContain("Add:");
+  expect(result.stdout).toContain("Ask:");
+  expect(result.stdout).toContain("Maintain:");
+  expect(result.stdout).toContain("enable search  Enable Basic Memory search over existing files.");
+  expect(result.stdout).toContain("Targeting:");
   expect(result.stdout).toContain("Start with: kb start");
   expect(result.stdout).toContain("kb start prints the first-run path");
   expect(result.stdout).toContain("kb new creates under KB Home: ~/kb/<name>/");
@@ -41,6 +47,22 @@ test("kb --version exits 0 and writes only the version to stdout", async () => {
     code: 0,
     stdout: "kb 0.1.0\n",
     stderr: "",
+  });
+});
+
+test("kb -V is version and bare -v is not a public alias", async () => {
+  const version = await harness.runKb(["-V"]);
+  const verbose = await harness.runKb(["-v"]);
+
+  expect(version).toEqual({
+    code: 0,
+    stdout: "kb 0.1.0\n",
+    stderr: "",
+  });
+  expect(verbose).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: unknown flag: -v\n",
   });
 });
 
@@ -86,6 +108,34 @@ test("kb new --help teaches what a KB is and where it lands", async () => {
   expect(result.stdout).toContain("Git: initialized silently unless the KB is already inside a git repo");
 });
 
+test("every public command has command-specific help", async () => {
+  const commands = [
+    ["start"],
+    ["new"],
+    ["init"],
+    ["list"],
+    ["add"],
+    ["draft"],
+    ["search"],
+    ["read"],
+    ["status"],
+    ["log"],
+    ["enable"],
+    ["reflect"],
+    ["check"],
+  ];
+
+  for (const command of commands) {
+    const result = await harness.runKb([...command, "--help"]);
+    expect(result.code, command.join(" ")).toBe(0);
+    expect(result.stderr, command.join(" ")).toBe("");
+    expect(result.stdout, command.join(" ")).toContain(`kb ${command.join(" ")}`);
+    expect(result.stdout, command.join(" ")).toContain("Usage:");
+    expect(result.stdout, command.join(" ")).toContain("Rules of thumb:");
+  }
+});
+
+
 test("kb start on an empty environment prints create-your-first guidance", async () => {
   const result = await harness.runKb(["start"]);
 
@@ -95,11 +145,11 @@ test("kb start on an empty environment prints create-your-first guidance", async
   expect(result.stdout).toContain(`KB Home: ${join(harness.home, "kb")}`);
   expect(result.stdout).toContain("1. Create your first KB.");
   expect(result.stdout).toContain("kb new research");
-  expect(result.stdout).toContain("kb --kb research add hello.txt");
+  expect(result.stdout).toContain("kb add hello.txt");
   expect(result.stdout).toContain("Agent step: follow the printed Playbook.");
   expect(result.stdout).toContain(`Write the Memory in ${join(harness.home, "kb", "research", "memories")}`);
-  expect(result.stdout).toContain('kb --kb research search "hello world"');
-  expect(result.stdout).toContain("kb --kb research status");
+  expect(result.stdout).toContain('kb search "hello world"');
+  expect(result.stdout).toContain("kb status");
 });
 
 test("kb start --help prints start help", async () => {
@@ -116,6 +166,9 @@ Usage:
 
 What it teaches:
   new -> add -> agent writes Memory from the playbook -> search -> status
+
+Rules of thumb:
+  Prints a first-run walkthrough; does not modify files.
 `,
     stderr: "",
   });
@@ -130,7 +183,15 @@ test("kb new research creates the B0 scaffold and initializes git silently", asy
   const result = await harness.runKb(["new", "research"]);
   const kbDir = join(harness.home, "kb", "research");
 
-  expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(result).toEqual({
+    code: 0,
+    stdout: `Created KB: research
+Path: ${kbDir}
+Default: research
+Next: kb add <file-or-url>
+`,
+    stderr: "",
+  });
   expect(await listTree(kbDir)).toEqual([
     ".git/",
     "AGENTS.md",
@@ -170,7 +231,12 @@ test("kb new --arm wiki scaffolds the wiki Arm", async () => {
   const result = await harness.runKb(["new", "wiki-research", "--arm", "wiki"]);
   const kbDir = join(harness.home, "kb", "wiki-research");
 
-  expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(result.stdout).toBe(`Created KB: wiki-research
+Path: ${kbDir}
+Default: wiki-research
+Next: kb add <file-or-url>
+`);
+  expect(result.stderr).toBe("");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: wiki\n");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
 });
@@ -213,7 +279,12 @@ test("kb new does not git init when the KB is already inside a git repo", async 
 
   const result = await harness.runKb(["new", "research"]);
 
-  expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(result.stdout).toBe(`Created KB: research
+Path: ${join(harness.home, "kb", "research")}
+Default: research
+Next: kb add <file-or-url>
+`);
+  expect(result.stderr).toBe("");
   expect(await listTree(join(harness.home, "kb", "research"))).toEqual([
     "AGENTS.md",
     "index.md",
@@ -242,7 +313,13 @@ test("kb init scaffolds the current directory in place and updates the Registry"
 
   const result = await harness.runKb(["init"]);
 
-  expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(result).toEqual({
+    code: 0,
+    stdout: `Initialized KB in ${harness.cwd}
+Next: kb add <file-or-url>
+`,
+    stderr: "",
+  });
   expect(await listTree(harness.cwd)).toEqual([
     ".git/",
     "AGENTS.md",
@@ -266,7 +343,7 @@ test("kb init refuses home and points at kb new", async () => {
     stdout: "",
     stderr: "kb: refusing to scaffold a KB here; use `kb new <name>` from home or root\n",
   });
-  expect(await readdir(harness.home)).toEqual([]);
+  expect((await readdir(harness.home)).filter((entry) => entry !== "Library")).toEqual([]);
 });
 
 test("kb init refuses filesystem root and points at kb new", async () => {
@@ -308,7 +385,7 @@ test("kb start with an existing KB lists it and suggests the next step", async (
   expect(result.stdout).toContain(kbDir);
   expect(result.stdout).toContain("Suggested next step for research:");
   expect(result.stdout).toContain("- Try `kb enable search`: 3 index entries make hybrid search more useful than plain file search.");
-  expect(result.stdout).toContain("kb --kb research add hello.txt");
+  expect(result.stdout).toContain("kb add hello.txt");
   expect(result.stdout).toContain(`Write the Memory in ${join(kbDir, "memories")}`);
 });
 
@@ -323,8 +400,8 @@ test("--kb resolves from an unrelated cwd and missing targets fail clearly", asy
     code: 0,
     stdout: `KB: research
 Path: ${join(harness.home, "kb", "research")}
-Arm: b0
-Engine: disabled
+Arm: b0 (plain markdown)
+Search: plain files
 Sources: 0
 Memories: 0
 Index entries: 0
@@ -342,6 +419,41 @@ Advisor:
   });
 });
 
+test("--in resolves from an unrelated cwd and --kb remains a hidden alias", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  await harness.runKb(["new", "research"]);
+
+  const modern = await harness.runKb(["--in", "research", "status"]);
+  const alias = await harness.runKb(["status", "--kb=research"]);
+
+  expect(modern.code).toBe(0);
+  expect(modern.stdout).toContain("KB: research\n");
+  expect(alias.code).toBe(0);
+  expect(alias.stdout).toContain("KB: research\n");
+});
+
+test("target and command-specific flags are rejected where meaningless", async () => {
+  const target = await harness.runKb(["new", "research", "--in", "other"]);
+  const guide = await harness.runKb(["start", "--guide"]);
+  const arm = await harness.runKb(["status", "--arm", "wiki"]);
+
+  expect(target).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: --in is not valid with kb new; that command does not target an existing KB\n",
+  });
+  expect(guide).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: --guide is only valid with kb init\n",
+  });
+  expect(arm).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: --arm is only valid with kb new or kb init\n",
+  });
+});
+
 test("cwd inside a KB is auto-detected before default fallback", async () => {
   await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
   await harness.runKb(["new", "research"]);
@@ -355,8 +467,8 @@ test("cwd inside a KB is auto-detected before default fallback", async () => {
     code: 0,
     stdout: `KB: papers
 Path: ${join(harness.home, "kb", "papers")}
-Arm: b0
-Engine: disabled
+Arm: b0 (plain markdown)
+Search: plain files
 Sources: 0
 Memories: 0
 Index entries: 0
@@ -414,8 +526,8 @@ test("kb add <file> stages raw source unchanged, logs ingest, and prints the ing
   expect(rawFiles).toHaveLength(1);
   expect(rawFiles[0]).toMatch(/^source-[a-f0-9]{12}\.md$/);
   expect(await readFile(join(kbDir, "raw", rawFiles[0]), "utf8")).toBe(sourceText);
-  expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain(`ingest | ${rawFiles[0]}`);
-  expect(result.stdout).toBe(`Ingest playbook
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain(`add | ${rawFiles[0]}`);
+  expect(result.stdout).toBe(`Add playbook
 Raw source: raw/${rawFiles[0]}
 Memory target: memories/source.md
 URL behavior: local file copied verbatim into raw/.
@@ -461,7 +573,7 @@ test("kb add in a wiki KB prints the eager ingest playbook", async () => {
 
   expect(result).toEqual({
     code: 0,
-    stdout: `Wiki ingest playbook
+    stdout: `Wiki add playbook
 Raw source: raw/${rawFile}
 Memory target: memories/source.md
 URL behavior: local file copied verbatim into raw/.
@@ -477,10 +589,10 @@ Agent half:
   });
 });
 
-test("kb note <title> creates a Basic Memory-compatible memory template", async () => {
+test("kb draft <title> creates a Basic Memory-compatible memory template", async () => {
   await scaffoldResearchKb();
 
-  const result = await harness.runKb(["note", "Example Memory", "--kb", "research"]);
+  const result = await harness.runKb(["draft", "Example Memory", "--kb", "research"]);
   const memory = await readFile(join(harness.home, "kb", "research", "memories", "example-memory.md"), "utf8");
 
   expect(result).toEqual({
@@ -499,6 +611,19 @@ permalink: example-memory
   expect(memory).toContain("- relates_to [[Target Memory]]");
 });
 
+test("kb note remains a hidden alias for draft", async () => {
+  await scaffoldResearchKb();
+
+  const result = await harness.runKb(["note", "Alias Memory", "--in", "research"]);
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: "Created memories/alias-memory.md\n",
+    stderr: "",
+  });
+  expect(await readFile(join(harness.home, "kb", "research", "memories", "alias-memory.md"), "utf8")).toContain("title: Alias Memory");
+});
+
 test("kb log appends and reads greppable append-only entries", async () => {
   await scaffoldResearchKb();
 
@@ -514,7 +639,7 @@ test("kb log appends and reads greppable append-only entries", async () => {
 
 test("kb read <ref> returns the memory and points at the tiered read order", async () => {
   await scaffoldResearchKb();
-  await harness.runKb(["note", "Example Memory", "--kb", "research"]);
+  await harness.runKb(["draft", "Example Memory", "--kb", "research"]);
 
   const result = await harness.runKb(["read", "example-memory", "--kb", "research"]);
 
@@ -557,7 +682,7 @@ Query: retrieval
 Results: 1
 
 1. memories/alpha.md | Alpha Memory
-   Source: index.md
+   Matched in: index.md
    Match: - [[memories/alpha.md|Alpha Memory]] | category: research | summary: Retrieval loops and citations.
 `,
     stderr: "",
@@ -592,9 +717,8 @@ Query: durable observation
 Results: 1
 
 1. memories/example-memory.md | Example Memory
-   Source: memory
-   Match: - [summary] One durable observation. #research
-- relates_to [[Target Memory]]
+   Matched in: memory
+   Match: - [summary] One durable observation. #research - relates_to [[Target Memory]]
 `,
     stderr: "",
   });
@@ -688,8 +812,8 @@ Line format:
     code: 0,
     stdout: `KB: research
 Path: ${kbDir}
-Arm: b0
-Engine: disabled
+Arm: b0 (plain markdown)
+Search: plain files
 Sources: 1
 Memories: 1
 Index entries: 1
@@ -759,7 +883,7 @@ exit 2
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
   const kbDir = join(harness.home, "kb", "research");
 
-  expect(result).toEqual({ code: 0, stdout: "Search enabled for research.\n", stderr: "" });
+  expect(result).toEqual({ code: 0, stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n", stderr: "" });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(`schemaVersion: 1
 formatVersion: basic-memory-note-v1
 arm: b1
@@ -795,7 +919,7 @@ test("populated B0 enables B1 search with zero content migration", async () => {
   }
 
   for (const title of ["Alpha Memory", "Beta Memory", "Gamma Memory"]) {
-    expect((await harness.runKb(["note", title, "--kb", "research"])).code).toBe(0);
+    expect((await harness.runKb(["draft", title, "--kb", "research"])).code).toBe(0);
   }
   await writeMemory(kbDir, "alpha-memory.md", "Alpha Memory", "alpha-memory", "", "\n- [summary] sharedterm alpha memory. #research\n- relates_to [[Beta Memory]]\n");
   await writeMemory(kbDir, "beta-memory.md", "Beta Memory", "beta-memory", "", "\n- [summary] sharedterm beta memory. #research\n- relates_to [[Gamma Memory]]\n");
@@ -843,7 +967,7 @@ exit 2
   await harness.writeFakeExecutable("uvx", "#!/bin/sh\necho 'uvx should not be needed when bm exists' >&2\nexit 2\n");
 
   const enabled = await harness.runKb(["enable", "search", "--kb", "research"]);
-  expect(enabled).toEqual({ code: 0, stdout: "Search enabled for research.\n", stderr: "" });
+  expect(enabled).toEqual({ code: 0, stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n", stderr: "" });
   const afterHashes = await contentHashes(kbDir);
   const changed = changedHashes(beforeHashes, afterHashes);
   expect(changed).toEqual(["kb.yaml"]);
@@ -895,7 +1019,7 @@ engine:
     project: null
 lastReflectAt: null
 `);
-  expect((await harness.runKb(["status", "--kb", "research"])).stdout).toContain("Arm: b0\nEngine: disabled");
+  expect((await harness.runKb(["status", "--kb", "research"])).stdout).toContain("Arm: b0 (plain markdown)\nSearch: plain files");
 });
 
 test("kb enable search reports install-check failure and leaves the KB in B0", async () => {
@@ -936,15 +1060,15 @@ test("kb enable search reports reindex failure and leaves the KB in B0", async (
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
 });
 
-test("engineless loop new add note search read status works with no Engine installed", async () => {
+test("engineless loop new add draft search read status works with no Engine installed", async () => {
   await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
   const source = join(harness.cwd, "source.md");
   await writeFile(source, "# Source\n\nFact one supports the minimal loop.\n");
 
-  expect(await harness.runKb(["new", "research"])).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect((await harness.runKb(["new", "research"])).code).toBe(0);
   const added = await harness.runKb(["add", source, "--kb", "research"]);
   expect(added.code).toBe(0);
-  expect(await harness.runKb(["note", "Loop Memory", "--kb", "research"])).toEqual({
+  expect(await harness.runKb(["draft", "Loop Memory", "--kb", "research"])).toEqual({
     code: 0,
     stdout: "Created memories/loop-memory.md\n",
     stderr: "",
@@ -979,7 +1103,7 @@ Line format:
   expect(read.code).toBe(0);
   expect(read.stdout).toContain("title: Loop Memory");
   expect(status.code).toBe(0);
-  expect(status.stdout).toContain("Engine: disabled");
+  expect(status.stdout).toContain("Search: plain files");
   expect(status.stdout).toContain("Advisor:\n- No suggestions.");
 });
 
@@ -991,7 +1115,7 @@ test("daily commands do not mutate existing raw contents", async () => {
   const rawFile = (await readdir(join(harness.home, "kb", "research", "raw")))[0];
   const rawPath = join(harness.home, "kb", "research", "raw", rawFile);
 
-  await harness.runKb(["note", "Other", "--kb", "research"]);
+  await harness.runKb(["draft", "Other", "--kb", "research"]);
   await harness.runKb(["log", "question | Check raw", "--kb", "research"]);
   await harness.runKb(["read", "other", "--kb", "research"]);
 
@@ -1037,7 +1161,7 @@ Agent half:
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("## [2026-07-07] reflect | 1 memories");
 });
 
-test("kb defrag reports deterministic cleanup candidates and mutates nothing", async () => {
+test("kb check reports deterministic cleanup candidates and mutates nothing", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
   await writeMemory(kbDir, "alpha.md", "Alpha", "alpha");
@@ -1053,12 +1177,12 @@ Line format:
 `);
   const before = await snapshotKb(kbDir);
 
-  const result = await harness.runKb(["defrag", "--kb", "research"]);
+  const result = await harness.runKb(["check", "--kb", "research"]);
 
   expect(result).toEqual({
     code: 0,
-    stdout: `Defrag playbook
-This command prints a defrag playbook only; it does not move, archive, or delete files.
+    stdout: `Check playbook
+This command prints deterministic structural candidates and an agent review playbook only; it does not move, archive, delete, or prove semantic issues.
 Deterministic candidates:
 Duplicate slugs:
 - alpha: memories/alpha-copy.md, memories/alpha.md
@@ -1075,30 +1199,53 @@ Archivable superseded refs:
 - memories/old-fact.md -> archive/memories/old-fact.md
 
 
+
 Agent half:
 1. Review only the deterministic candidates above.
 2. For superseded facts, move the old Memory to archive/memories/ and add a replacement note; do not delete it.
 3. Fix index.md so every indexed Memory exists and every kept Memory has one catalog line.
-4. Do not claim kb defrag found semantic duplicates, contradictions, or stale facts.
+4. Do not claim kb check found semantic duplicates, contradictions, or stale facts.
 `,
     stderr: "",
   });
   expect(await snapshotKb(kbDir)).toEqual(before);
 });
 
-test("kb lint refuses non-wiki Arms clearly", async () => {
+test("kb check works on non-wiki Arms", async () => {
   await scaffoldResearchKb();
 
-  const result = await harness.runKb(["lint", "--kb", "research"]);
+  const result = await harness.runKb(["check", "--kb", "research"]);
 
   expect(result).toEqual({
-    code: 64,
-    stdout: "",
-    stderr: "kb: kb lint applies to the wiki Arm; this KB is b0\n",
+    code: 0,
+    stdout: `Check playbook
+This command prints deterministic structural candidates and an agent review playbook only; it does not move, archive, delete, or prove semantic issues.
+Deterministic candidates:
+Duplicate slugs:
+- None
+
+Orphan memories not in index.md:
+- None
+
+Dangling index refs:
+- None
+
+Archivable superseded refs:
+- None
+
+
+
+Agent half:
+1. Review only the deterministic candidates above.
+2. For superseded facts, move the old Memory to archive/memories/ and add a replacement note; do not delete it.
+3. Fix index.md so every indexed Memory exists and every kept Memory has one catalog line.
+4. Do not claim kb check found semantic duplicates, contradictions, or stale facts.
+`,
+    stderr: "",
   });
 });
 
-test("kb lint reports deterministic structural issues and prints contradiction review playbook", async () => {
+test("kb check reports deterministic structural issues and prints contradiction review playbook", async () => {
   await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
   await harness.runKb(["new", "wiki-research", "--arm", "wiki"]);
   const kbDir = join(harness.home, "kb", "wiki-research");
@@ -1112,30 +1259,42 @@ Line format:
 - [[memories/missing-index.md|Missing Index]] | category: research | summary: Missing.
 `);
 
-  const result = await harness.run("kb", ["lint", "--kb", "wiki-research"], {
+  const result = await harness.run("kb", ["check", "--kb", "wiki-research"], {
     env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
   });
 
   expect(result).toEqual({
     code: 0,
-    stdout: `Wiki lint
-Deterministic structural issues:
-Orphan pages not in index.md:
+    stdout: `Check playbook
+This command prints deterministic structural candidates and an agent review playbook only; it does not move, archive, delete, or prove semantic issues.
+Deterministic candidates:
+Duplicate slugs:
+- None
+
+Orphan memories not in index.md:
 - memories/orphan.md
+
+Dangling index refs:
+- memories/missing-index.md
+
+Archivable superseded refs:
+- None
+
+Wiki structural candidates:
 Dangling [[links]]:
 - memories/alpha.md -> Missing Page
 Missing cross-references:
 - memories/orphan.md has no [[links]]
 Stale-by-date flags:
 - memories/alpha.md review_after 2026-07-01
-Dangling index refs:
-- memories/missing-index.md
 
-Contradiction review playbook:
-1. Review related pages and stale flags above.
-2. Print a checklist of claims the model thinks may conflict, with file refs.
-3. Update derivatives in memories/ only; never edit raw/.
-4. Do not claim kb lint proves semantic contradictions or note quality.
+
+
+Agent half:
+1. Review only the deterministic candidates above.
+2. For superseded facts, move the old Memory to archive/memories/ and add a replacement note; do not delete it.
+3. Fix index.md so every indexed Memory exists and every kept Memory has one catalog line.
+4. Do not claim kb check found semantic duplicates, contradictions, or stale facts.
 `,
     stderr: "",
   });
@@ -1192,7 +1351,7 @@ function searchShape(stdout: string): string[] {
       || line.startsWith("Query: ")
       || line.startsWith("Results: ")
       || /^\d+\. memories\/.+ \| .+$/.test(line)
-      || line.startsWith("   Source: ")
+      || line.startsWith("   Matched in: ")
       || line.startsWith("   Match: ")
     )
     .map((line) =>

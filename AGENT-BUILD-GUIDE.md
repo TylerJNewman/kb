@@ -9,9 +9,9 @@ A minimal, self-documenting CLI (`kb`) that an AI agent drives to scaffold and g
 - `CONTEXT.md` — domain glossary (use these exact terms: KB, Arm, Engine, Memory, Raw source, Derivative, Advisor, Playbook, Registry, KB Home).
 
 ## Non-negotiable architecture (from ADRs)
-- **Stack:** TypeScript on **Bun**. npm package `@tylerjnewman/kb`, binary `kb`. Zero-install runnable via `bunx`.
+- **Stack:** TypeScript on **Bun**. npm package `@tylerjnewman/kb`, binary `kb`. Install-once runnable after `npm i -g @tylerjnewman/kb`.
 - **Agent-first, non-interactive:** no wizards/TUI prompts ever. Every decision is a flag with a default. Education ships as printed `--help`/`--guide`/playbook text.
-- **Playbook boundary:** the CLI has NO LLM. Synthesis verbs (`add`, `reflect`, `defrag`, wiki ingest) do the deterministic half in code (stage files, update index/log, diff notes) then PRINT a playbook for the agent's meaning-making half. Never claim contradiction-detection or note quality as a code guarantee.
+- **Playbook boundary:** the CLI has NO LLM. Synthesis verbs (`add`, `reflect`, `check`, wiki add) do the deterministic half in code (stage files, update index/log, diff notes) then PRINT a playbook for the agent's meaning-making half. Never claim contradiction-detection or note quality as a code guarantee.
 - **Engine = Basic Memory, wrapped out-of-process, never forked, lazy-installed** via `uvx basic-memory` only when a B-arm needs search. Talk to it via `bm tool <cmd> --json`. The npm package carries no Python. Reference checkout: `/Users/tyler/code/mcp/basic-memory` (see its `NOTE-FORMAT.md`).
 - **Arms (v1):** `wiki` (eager, engineless), `b0` (default, lazy, engineless), `b1` (b0 + engine). `--arm b2` is DEFERRED — reject it with a "deferred" message. Maintenance reminders = the Advisor (default-on), not a separate arm.
 

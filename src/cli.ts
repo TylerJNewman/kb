@@ -19,15 +19,20 @@ const PRODUCT_COMMANDS = new Set([
   "list",
   "status",
   "add",
-  "note",
+  "draft",
   "search",
   "read",
   "log",
   "enable",
   "reflect",
-  "defrag",
-  "lint",
+  "check",
 ]);
+
+const HIDDEN_COMMAND_ALIASES: Record<string, string> = {
+  note: "draft",
+  defrag: "check",
+  lint: "check",
+};
 
 type ParseResult =
   | {
@@ -35,6 +40,7 @@ type ParseResult =
       help: boolean;
       version: boolean;
       kbName: string | null;
+      targetFlag: "--in" | "--kb" | null;
       command: string | null;
       args: string[];
       guide: boolean;
@@ -60,8 +66,23 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (parsed.help && parsed.command === "init") {
+    process.stdout.write(initHelpText());
+    return 0;
+  }
+
   if (parsed.help && parsed.command === "start") {
     process.stdout.write(startHelpText());
+    return 0;
+  }
+
+  if (parsed.help && parsed.command !== null) {
+    const text = commandHelpText(parsed.command);
+    if (text === null) {
+      writeError(`unknown command: ${parsed.command}`);
+      return EXIT_USAGE;
+    }
+    process.stdout.write(text);
     return 0;
   }
 
@@ -77,6 +98,16 @@ export async function main(argv: string[]): Promise<number> {
 
   if (!PRODUCT_COMMANDS.has(parsed.command)) {
     writeError(`unknown command: ${parsed.command}`);
+    return EXIT_USAGE;
+  }
+
+  if (parsed.targetFlag !== null && ["new", "init", "list", "start"].includes(parsed.command)) {
+    writeError(`${parsed.targetFlag} is not valid with kb ${parsed.command}; that command does not target an existing KB`);
+    return EXIT_USAGE;
+  }
+
+  if (parsed.guide && parsed.command !== "init") {
+    writeError("--guide is only valid with kb init");
     return EXIT_USAGE;
   }
 
@@ -117,7 +148,7 @@ export async function main(argv: string[]): Promise<number> {
     return addSource(parsed.kbName, parsed.args);
   }
 
-  if (parsed.command === "note") {
+  if (parsed.command === "draft") {
     return createMemoryNote(parsed.kbName, parsed.args);
   }
 
@@ -133,12 +164,8 @@ export async function main(argv: string[]): Promise<number> {
     return reflectKb(parsed.kbName, parsed.args);
   }
 
-  if (parsed.command === "defrag") {
-    return defragKb(parsed.kbName, parsed.args);
-  }
-
-  if (parsed.command === "lint") {
-    return lintKb(parsed.kbName, parsed.args);
+  if (parsed.command === "check") {
+    return checkKb(parsed.kbName, parsed.args);
   }
 
   writeError(`command not implemented in this slice: ${parsed.command}`);
@@ -149,6 +176,7 @@ function parseArgs(argv: string[]): ParseResult {
   let help = false;
   let version = false;
   let kbName: string | null = null;
+  let targetFlag: "--in" | "--kb" | null = null;
   let command: string | null = null;
   let guide = false;
   let arm: string | null = null;
@@ -162,27 +190,30 @@ function parseArgs(argv: string[]): ParseResult {
       continue;
     }
 
-    if (arg === "--version" || arg === "-v") {
+    if (arg === "--version" || arg === "-V") {
       version = true;
       continue;
     }
 
-    if (arg === "--kb") {
+    if (arg === "--in" || arg === "--kb") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("-")) {
-        return { ok: false, message: "--kb requires a name" };
+        return { ok: false, message: `${arg} requires a name` };
       }
       kbName = value;
+      targetFlag = arg;
       i += 1;
       continue;
     }
 
-    if (arg.startsWith("--kb=")) {
-      const value = arg.slice("--kb=".length);
+    if (arg.startsWith("--in=") || arg.startsWith("--kb=")) {
+      const flag = arg.startsWith("--in=") ? "--in" : "--kb";
+      const value = arg.slice(`${flag}=`.length);
       if (value.length === 0) {
-        return { ok: false, message: "--kb requires a name" };
+        return { ok: false, message: `${flag} requires a name` };
       }
       kbName = value;
+      targetFlag = flag;
       continue;
     }
 
@@ -219,10 +250,10 @@ function parseArgs(argv: string[]): ParseResult {
       continue;
     }
 
-    command = arg;
+    command = HIDDEN_COMMAND_ALIASES[arg] ?? arg;
   }
 
-  return { ok: true, help, version, kbName, command, args, guide, arm };
+  return { ok: true, help, version, kbName, targetFlag, command, args, guide, arm };
 }
 
 function writeError(message: string): void {
@@ -237,18 +268,42 @@ raw sources stay immutable in raw/, derivatives live in memories/, and the CLI
 keeps the catalog and log consistent.
 
 Usage:
-  kb [--kb <name>] <command> [flags]
-  kb new <name>
+  kb <command> [args] [--in <name>]
   kb --help
   kb --version
 
 Global flags:
-  --kb <name>    Target a named KB from the Registry.
+  --in <name>    Target a named KB from the Registry.
   --help         Print this help text.
   --version      Print the CLI version.
+  -V             Print the CLI version.
 
-Commands:
-  start new init list status add note search read log enable reflect defrag lint
+Learning:
+  start          Prints a first-run walkthrough; does not modify files.
+
+Create:
+  new            Create a KB under KB Home.
+  init           Initialize a KB in the current directory.
+
+Add:
+  add            Bring in a raw source.
+  draft          Create a blank Memory for the agent to write.
+
+Ask:
+  search         Search the current or targeted KB.
+  read           Read one Memory by ref.
+  status         Show KB state and Advisor suggestions.
+  list           List known KBs.
+  log            Read or append the KB log.
+
+Maintain:
+  enable search  Enable Basic Memory search over existing files.
+  reflect        Print a reflect plan for changed Memories.
+  check          Print deterministic structural candidates and an agent playbook.
+
+Targeting:
+  Default target: the KB you're inside (cwd), else your default KB.
+  Use --in <name> only to target another KB.
 
 Rules of thumb:
   Start with: kb start
@@ -257,12 +312,12 @@ Rules of thumb:
   The default Arm is b0: plain markdown, Basic Memory format, Engine disabled.
   Scaffold Arms: wiki, b0. b1 is reached with kb enable search; b2 is deferred.
   Retrieval favors b0/b1; curation favors wiki.
-  Drift tax rises with eager wiki curation; use wiki-arm kb lint and reflect when it does.
+  Drift tax rises with eager wiki curation; use kb check and reflect when it does.
 
 Conventions:
   stdout is for requested output and playbooks.
   stderr is for errors and diagnostics.
-  usage errors exit 64; unavailable router stubs exit 69.
+  usage errors exit 64; unavailable dependency/integration failures exit 69.
 `;
 }
 
@@ -276,6 +331,9 @@ Usage:
 
 What it teaches:
   new -> add -> agent writes Memory from the playbook -> search -> status
+
+Rules of thumb:
+  Prints a first-run walkthrough; does not modify files.
 `;
 }
 
@@ -292,15 +350,140 @@ A KB is a portable git repo of markdown:
 
 Default behavior:
   Arm: b0
-  Engine: disabled
+  Search: plain files
   Git: initialized silently unless the KB is already inside a git repo
   Use --arm wiki only when the human has explicitly chosen that Arm.
 
 Usage:
   kb new <name> [--arm wiki|b0]
 
-Name must be one path segment, for example: research, papers-2026.
+Rules of thumb:
+  Omit --arm for the default b0 KB. Use --arm wiki only when the human has explicitly chosen it.
+  Name must be one path segment, for example: research, papers-2026.
 `;
+}
+
+function initHelpText(): string {
+  return `kb init
+
+Initialize a KB in the current directory.
+
+Usage:
+  kb init [--guide] [--arm wiki|b0]
+
+Rules of thumb:
+  Use this inside an existing project or folder you already want as a KB.
+  Use kb new <name> when you want kb to choose ~/kb/<name>/ for you.
+  --guide prints the non-interactive Arm chooser and does not modify files.
+`;
+}
+
+function commandHelpText(command: string): string | null {
+  const help: Record<string, string> = {
+    list: `kb list
+
+List known KBs from the Registry.
+
+Usage:
+  kb list
+
+Rules of thumb:
+  Does not target a KB. If none exist, create one with kb new <name>.
+`,
+    add: `kb add <file-or-url>
+
+Bring in one raw source, then print the Add playbook for the agent.
+
+Usage:
+  kb add <file-or-url> [--in <name>]
+
+Rules of thumb:
+  add preserves raw/ and asks the agent to write or update a Memory.
+`,
+    draft: `kb draft <title...>
+
+Create a blank Basic Memory-compatible Memory for the agent to write.
+
+Usage:
+  kb draft <title...> [--in <name>]
+
+Rules of thumb:
+  add = bring in a raw source.
+  draft = create a blank Memory for the agent to write.
+`,
+    search: `kb search <query...>
+
+Search index.md and Memories, or Basic Memory when search is enabled.
+
+Usage:
+  kb search <query...> [--in <name>]
+
+Rules of thumb:
+  Start broad, then read cited Memories with kb read <ref>.
+`,
+    read: `kb read <ref>
+
+Read one Memory by ref.
+
+Usage:
+  kb read <ref> [--in <name>]
+
+Rules of thumb:
+  Use refs from kb search or index.md.
+`,
+    status: `kb status
+
+Show KB state and Advisor suggestions.
+
+Usage:
+  kb status [--in <name>]
+
+Rules of thumb:
+  Human labels explain the Arm and search mode; config details stay in kb.yaml.
+`,
+    log: `kb log [entry...]
+
+Read the KB log, or append one manual single-line entry.
+
+Usage:
+  kb log [entry...] [--in <name>]
+
+Rules of thumb:
+  Log entries are append-only and greppable.
+`,
+    enable: `kb enable search
+
+Enable Basic Memory search over existing files.
+
+Usage:
+  kb enable search [--in <name>]
+
+Rules of thumb:
+  Existing raw/, memories/, index.md, and log.md stay unchanged.
+`,
+    reflect: `kb reflect
+
+Compute changed Memories and print a reflect plan for the agent.
+
+Usage:
+  kb reflect [--in <name>]
+
+Rules of thumb:
+  kb writes lastReflectAt and the log entry; the agent does the synthesis.
+`,
+    check: `kb check
+
+Print deterministic structural candidates and an agent review playbook.
+
+Usage:
+  kb check [--in <name>]
+
+Rules of thumb:
+  check does not prove semantic duplicates or contradictions.
+  Wiki KBs also include wiki-link and stale-date checks.
+`,
+  };
+  return help[command] ?? null;
 }
 
 function initGuideText(): string {
@@ -339,16 +522,16 @@ KB Home: ${kbHome}
 
 2. Add one raw source. kb files it, then prints a Playbook.
    printf 'hello world memory systems' > hello.txt
-   kb --kb research add hello.txt
+   kb add hello.txt
 
 3. Agent step: follow the printed Playbook.
    Write the Memory in ${join(kbHome, "research", "memories")} and keep raw/ immutable.
 
 4. Search what the agent wrote.
-   kb --kb research search "hello world"
+   kb search "hello world"
 
 5. Check state and the Advisor's next suggestion.
-   kb --kb research status
+   kb status
 
 Rules of thumb:
   kb does bookkeeping; the agent does meaning.
@@ -381,16 +564,16 @@ Hello-world loop:
 
 2. Add one raw source. kb files it, then prints a Playbook.
    printf 'hello world memory systems' > hello.txt
-   kb --kb ${targetName} add hello.txt
+   kb add hello.txt
 
 3. Agent step: follow the printed Playbook.
    Write the Memory in ${join(targetPath, "memories")} and keep raw/ immutable.
 
 4. Search what the agent wrote.
-   kb --kb ${targetName} search "hello world"
+   kb search "hello world"
 
 5. Check state and the Advisor's next suggestion.
-   kb --kb ${targetName} status
+   kb status
 
 Rules of thumb:
   kb does bookkeeping; the agent does meaning.
@@ -423,7 +606,11 @@ async function createKb(args: string[], arm: string | null): Promise<number> {
   try {
     await mkdir(kbHome, { recursive: true });
     await scaffoldKb(kbDir, name, selectedArm);
-    await registerKb(name, kbDir);
+    const becameDefault = await registerKb(name, kbDir);
+    process.stdout.write(`Created KB: ${name}
+Path: ${kbDir}
+${becameDefault ? `Default: ${name}\n` : ""}Next: kb add <file-or-url>
+`);
   } catch (error) {
     if (isNodeError(error) && error.code === "EEXIST") {
       writeError(`KB already exists: ${kbDir}`);
@@ -462,6 +649,9 @@ async function initKb(args: string[], arm: string | null): Promise<number> {
   try {
     await scaffoldKb(cwd, name, selectedArm);
     await registerKb(name, cwd);
+    process.stdout.write(`Initialized KB in ${cwd}
+Next: kb add <file-or-url>
+`);
   } catch (error) {
     if (isNodeError(error) && error.code === "EEXIST") {
       writeError(`KB already exists: ${cwd}`);
@@ -520,7 +710,7 @@ async function scaffoldKb(kbDir: string, name: string, arm = "b0"): Promise<void
 async function listKbs(): Promise<number> {
   const registry = await loadRegistry();
   if (registry.kbs.size === 0) {
-    process.stdout.write("No KBs found.\n");
+    process.stdout.write("No KBs found. Run kb new <name> to create one.\n");
     return 0;
   }
 
@@ -531,7 +721,7 @@ async function listKbs(): Promise<number> {
 async function statusKb(kbName: string | null): Promise<number> {
   const target = await resolveTargetKb(kbName);
   if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
 
@@ -542,8 +732,8 @@ async function statusKb(kbName: string | null): Promise<number> {
 
   process.stdout.write(`KB: ${target.name}
 Path: ${target.path}
-Arm: ${config.arm}
-Engine: ${config.engineState}
+Arm: ${armLabel(config.arm)}
+Search: ${config.engineState === "enabled" ? "Basic Memory enabled" : "plain files"}
 Sources: ${counts.sources}
 Memories: ${counts.memories}
 Index entries: ${counts.indexEntries}
@@ -563,7 +753,7 @@ async function enableKb(kbName: string | null, args: string[]): Promise<number> 
 
   const target = await resolveTargetKb(kbName);
   if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
 
@@ -580,7 +770,7 @@ async function enableKb(kbName: string | null, args: string[]): Promise<number> 
   }
 
   await writeKbConfig(target.path, { ...config, ...enabled.value });
-  process.stdout.write(`Search enabled for ${target.name}.\n`);
+  process.stdout.write(`Search enabled for ${target.name}. Arm: b1. Existing files unchanged.\n`);
   return 0;
 }
 
@@ -602,7 +792,7 @@ async function searchKb(kbName: string | null, args: string[]): Promise<number> 
 
   const target = await resolveTargetKb(kbName);
   if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
 
@@ -633,7 +823,7 @@ async function addSource(kbName: string | null, args: string[]): Promise<number>
 
   const target = await resolveTargetKb(kbName);
   if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
 
@@ -643,25 +833,25 @@ async function addSource(kbName: string | null, args: string[]): Promise<number>
     return EXIT_USAGE;
   }
 
-  await appendLogEntry(target.path, "ingest", staged.rawFile);
+  await appendLogEntry(target.path, "add", staged.rawFile);
   const config = await readKbConfig(target.path);
   process.stdout.write(config.arm === "wiki" ? wikiIngestPlaybook(staged) : ingestPlaybook(staged));
   return 0;
 }
 
 async function createMemoryNote(kbName: string | null, args: string[]): Promise<number> {
-  if (args.length !== 1) {
-    writeError("usage: kb note <title>");
+  if (args.length === 0) {
+    writeError("usage: kb draft <title...>");
     return EXIT_USAGE;
   }
 
   const target = await resolveTargetKb(kbName);
   if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
 
-  const title = args[0].trim();
+  const title = args.join(" ").trim();
   if (title.length === 0) {
     writeError("title is required");
     return EXIT_USAGE;
@@ -690,7 +880,7 @@ async function createMemoryNote(kbName: string | null, args: string[]): Promise<
 async function logKb(kbName: string | null, args: string[]): Promise<number> {
   const target = await resolveTargetKb(kbName);
   if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
 
@@ -699,16 +889,13 @@ async function logKb(kbName: string | null, args: string[]): Promise<number> {
     return 0;
   }
 
-  if (args.length !== 1) {
-    writeError("usage: kb log [entry]");
-    return EXIT_USAGE;
-  }
-  if (!isSingleLine(args[0])) {
+  const entry = args.join(" ");
+  if (!isSingleLine(entry)) {
     writeError("log entry must be a single line");
     return EXIT_USAGE;
   }
 
-  await appendFile(join(target.path, "log.md"), `## [${todayIso()}] ${args[0]}\n`);
+  await appendFile(join(target.path, "log.md"), `## [${todayIso()}] ${entry}\n`);
   return 0;
 }
 
@@ -720,13 +907,13 @@ async function readMemory(kbName: string | null, args: string[]): Promise<number
 
   const target = await resolveTargetKb(kbName);
   if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
 
   const memoryPath = await resolveMemoryRef(target.path, args[0]);
   if (memoryPath === null) {
-    writeError(`memory not found: ${args[0]}`);
+    writeError(`memory not found: ${args[0]}; try kb search "${args[0]}" or inspect index.md`);
     return EXIT_USAGE;
   }
 
@@ -743,7 +930,7 @@ async function reflectKb(kbName: string | null, args: string[]): Promise<number>
 
   const target = await resolveTargetKb(kbName);
   if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
 
@@ -756,41 +943,22 @@ async function reflectKb(kbName: string | null, args: string[]): Promise<number>
   return 0;
 }
 
-async function defragKb(kbName: string | null, args: string[]): Promise<number> {
+async function checkKb(kbName: string | null, args: string[]): Promise<number> {
   if (args.length !== 0) {
-    writeError("usage: kb defrag");
+    writeError("usage: kb check");
     return EXIT_USAGE;
   }
 
   const target = await resolveTargetKb(kbName);
   if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
-    return EXIT_USAGE;
-  }
-
-  process.stdout.write(defragPlaybook(await defragCandidates(target.path)));
-  return 0;
-}
-
-async function lintKb(kbName: string | null, args: string[]): Promise<number> {
-  if (args.length !== 0) {
-    writeError("usage: kb lint");
-    return EXIT_USAGE;
-  }
-
-  const target = await resolveTargetKb(kbName);
-  if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
 
   const config = await readKbConfig(target.path);
-  if (config.arm !== "wiki") {
-    writeError(`kb lint applies to the wiki Arm; this KB is ${config.arm}`);
-    return EXIT_USAGE;
-  }
-
-  process.stdout.write(wikiLintReport(await wikiLintIssues(target.path)));
+  const defrag = await defragCandidates(target.path);
+  const wiki = config.arm === "wiki" ? await wikiLintIssues(target.path) : null;
+  process.stdout.write(checkPlaybook(defrag, wiki));
   return 0;
 }
 
@@ -1063,16 +1231,22 @@ async function searchFiles(kbPath: string, query: string): Promise<SearchResult[
 function renderSearchResults(kbName: string, query: string, results: SearchResult[]): string {
   const lines = [`Search results`, `KB: ${kbName}`, `Query: ${query}`, `Results: ${results.length}`];
   if (results.length === 0) {
+    lines.push("Next: try broader terms, check index.md, or kb status for the Advisor.");
     return `${lines.join("\n")}\n`;
   }
 
   lines.push("");
   results.forEach((result, index) => {
     lines.push(`${index + 1}. ${result.ref} | ${result.title}`);
-    lines.push(`   Source: ${result.source}`);
-    lines.push(`   Match: ${result.match}`);
+    lines.push(`   Matched in: ${result.source}`);
+    lines.push(`   Match: ${singleLineMatch(result.match)}`);
   });
   return `${lines.join("\n")}\n`;
+}
+
+function singleLineMatch(value: string): string {
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  return oneLine.length <= 240 ? oneLine : `${oneLine.slice(0, 237)}...`;
 }
 
 function indexEntryLines(index: string): string[] {
@@ -1196,9 +1370,16 @@ async function defragCandidates(kbPath: string): Promise<DefragCandidates> {
   };
 }
 
-function defragPlaybook(candidates: DefragCandidates): string {
-  return `Defrag playbook
-This command prints a defrag playbook only; it does not move, archive, or delete files.
+function checkPlaybook(candidates: DefragCandidates, wiki: WikiLintIssues | null): string {
+  const wikiSection = wiki === null ? "" : `Wiki structural candidates:
+Dangling [[links]]:
+${renderCandidateLines(wiki.danglingLinks)}Missing cross-references:
+${renderCandidateLines(wiki.missingCrossReferences)}Stale-by-date flags:
+${renderCandidateLines(wiki.staleFlags)}
+`;
+
+  return `Check playbook
+This command prints deterministic structural candidates and an agent review playbook only; it does not move, archive, delete, or prove semantic issues.
 Deterministic candidates:
 Duplicate slugs:
 ${renderCandidateLines(candidates.duplicateSlugs.map((candidate) => `${candidate.slug}: ${candidate.refs.join(", ")}`))}
@@ -1208,12 +1389,13 @@ Dangling index refs:
 ${renderCandidateLines(candidates.danglingIndexRefs)}
 Archivable superseded refs:
 ${renderCandidateLines(candidates.archivableSupersededRefs.map((ref) => `${ref} -> archive/${ref}`))}
+${wikiSection}
 
 Agent half:
 1. Review only the deterministic candidates above.
 2. For superseded facts, move the old Memory to archive/memories/ and add a replacement note; do not delete it.
 3. Fix index.md so every indexed Memory exists and every kept Memory has one catalog line.
-4. Do not claim kb defrag found semantic duplicates, contradictions, or stale facts.
+4. Do not claim kb check found semantic duplicates, contradictions, or stale facts.
 `;
 }
 
@@ -1230,7 +1412,7 @@ function ingestPlaybook(staged: StagedSource): string {
 
   const formatLines = memoryFormatPlaybookLines(memoryRef, staged.title);
 
-  return `Ingest playbook
+  return `Add playbook
 Raw source: ${rawRef}
 Memory target: ${memoryRef}
 URL behavior: ${urlBehavior}
@@ -1253,7 +1435,7 @@ function wikiIngestPlaybook(staged: StagedSource): string {
     ? "v1 stages a URL reference only; full HTML archiving is deferred."
     : "local file copied verbatim into raw/.";
 
-  return `Wiki ingest playbook
+  return `Wiki add playbook
 Raw source: ${rawRef}
 Memory target: ${memoryRef}
 URL behavior: ${urlBehavior}
@@ -1336,23 +1518,6 @@ function wikiLinks(text: string): string[] {
 function isPastDate(value: string): boolean {
   const date = Date.parse(value);
   return Number.isFinite(date) && date < Date.parse(todayIso());
-}
-
-function wikiLintReport(issues: WikiLintIssues): string {
-  return `Wiki lint
-Deterministic structural issues:
-Orphan pages not in index.md:
-${renderCandidateLines(issues.orphanPages)}Dangling [[links]]:
-${renderCandidateLines(issues.danglingLinks)}Missing cross-references:
-${renderCandidateLines(issues.missingCrossReferences)}Stale-by-date flags:
-${renderCandidateLines(issues.staleFlags)}Dangling index refs:
-${renderCandidateLines(issues.danglingIndexRefs)}
-Contradiction review playbook:
-1. Review related pages and stale flags above.
-2. Print a checklist of claims the model thinks may conflict, with file refs.
-3. Update derivatives in memories/ only; never edit raw/.
-4. Do not claim kb lint proves semantic contradictions or note quality.
-`;
 }
 
 async function resolveMemoryRef(kbPath: string, ref: string): Promise<string | null> {
@@ -1438,6 +1603,19 @@ function renderAdvisor(suggestions: string[]): string {
   return suggestions.map((suggestion) => `- ${suggestion}`).join("\n");
 }
 
+function armLabel(arm: string): string {
+  if (arm === "b0") {
+    return "b0 (plain markdown)";
+  }
+  if (arm === "b1") {
+    return "b1 (Basic Memory search)";
+  }
+  if (arm === "wiki") {
+    return "wiki (curated pages)";
+  }
+  return arm;
+}
+
 async function isInsideGitRepo(path: string): Promise<boolean> {
   let current = resolve(path);
   const root = parse(current).root;
@@ -1485,19 +1663,21 @@ function renderStartNextStep(name: string, counts: KbCounts, advisor: string[]):
     return `- ${advisor[0]}`;
   }
   if (counts.sources === 0) {
-    return `- Add a source: kb --kb ${name} add <file-or-url>`;
+    return "- Add a source: kb add <file-or-url>";
   }
   if (counts.memories === 0) {
     return "- Follow the last add Playbook and write the first Memory in memories/.";
   }
-  return `- Ask a question: kb --kb ${name} search "hello world"`;
+  return `- Ask a question: kb search "hello world"`;
 }
 
-async function registerKb(name: string, path: string): Promise<void> {
+async function registerKb(name: string, path: string): Promise<boolean> {
   const registry = await loadRegistry();
+  const becameDefault = registry.defaultKb === null || (registry.defaultKb === name && registry.kbs.size === 1 && registry.kbs.has(name));
   registry.kbs.set(name, path);
   registry.defaultKb ??= name;
   await writeRegistry(registry);
+  return becameDefault;
 }
 
 async function loadRegistry(): Promise<Registry> {
