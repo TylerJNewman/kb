@@ -1003,6 +1003,7 @@ Line format:
   expect(result).toEqual({
     code: 0,
     stdout: `Defrag playbook
+This command prints a defrag playbook only; it does not move, archive, or delete files.
 Deterministic candidates:
 Duplicate slugs:
 - alpha: memories/alpha-copy.md, memories/alpha.md
@@ -1028,6 +1029,18 @@ Agent half:
     stderr: "",
   });
   expect(await snapshotKb(kbDir)).toEqual(before);
+});
+
+test("kb lint refuses non-wiki Arms clearly", async () => {
+  await scaffoldResearchKb();
+
+  const result = await harness.runKb(["lint", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: kb lint applies to the wiki Arm; this KB is b0\n",
+  });
 });
 
 test("kb lint reports deterministic structural issues and prints contradiction review playbook", async () => {

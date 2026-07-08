@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, parse, resolve } from "node:path";
+import { BasicMemoryAdapter } from "./engine/basic-memory";
 import { FORMAT_VERSION, INDEX_LINE_FORMAT, indexLine, memoryFormatPlaybookLines, memoryTemplate } from "./memory-format";
 
 export const VERSION = "0.0.0";
@@ -245,7 +246,7 @@ Rules of thumb:
   The default Arm is b0: plain markdown, Basic Memory format, Engine disabled.
   Scaffold Arms: wiki, b0. b1 is reached with kb enable search; b2 is deferred.
   Retrieval favors b0/b1; curation favors wiki.
-  Drift tax rises with eager wiki curation; use kb lint and reflect when it does.
+  Drift tax rises with eager wiki curation; use wiki-arm kb lint and reflect when it does.
 
 Conventions:
   stdout is for requested output and playbooks.
@@ -472,32 +473,13 @@ async function enableKb(kbName: string | null, args: string[]): Promise<number> 
     return 0;
   }
 
-  if (!(await commandAvailable("bm"))) {
-    if (!(await commandAvailable("uvx"))) {
-      writeError("cannot enable search: uvx is not on PATH. Install uv, then rerun `kb enable search`.");
-      return EXIT_UNAVAILABLE;
-    }
-
-    const installed = await runExternal("uvx", ["basic-memory", "--version"], target.path);
-    if (installed.code !== 0) {
-      writeError(`cannot enable search: Basic Memory install check failed. ${firstOutputLine(installed)}`);
-      return EXIT_UNAVAILABLE;
-    }
-  }
-
-  const added = await runExternal("bm", ["project", "add", target.name, target.path], target.path);
-  if (added.code !== 0) {
-    writeError(`cannot enable search: Basic Memory project add failed. ${firstOutputLine(added)}`);
+  const enabled = await new BasicMemoryAdapter().enable(target.path, target.name);
+  if (!enabled.ok) {
+    writeError(`cannot enable search: ${enabled.message}`);
     return EXIT_UNAVAILABLE;
   }
 
-  const reindexed = await runExternal("bm", ["reindex", "--project", target.name, "--search"], target.path);
-  if (reindexed.code !== 0) {
-    writeError(`cannot enable search: Basic Memory reindex failed. ${firstOutputLine(reindexed)}`);
-    return EXIT_UNAVAILABLE;
-  }
-
-  await writeKbConfig(target.path, { arm: "b1", engineState: "enabled", engineProject: target.name });
+  await writeKbConfig(target.path, { ...config, ...enabled.value });
   process.stdout.write(`Search enabled for ${target.name}.\n`);
   return 0;
 }
@@ -525,11 +507,16 @@ async function searchKb(kbName: string | null, args: string[]): Promise<number> 
   }
 
   const config = await readKbConfig(target.path);
-  const results = config.engineState === "enabled"
-    ? await searchEngine(target, config, query)
-    : await searchFiles(target.path, query);
-  if (results === null) {
-    return EXIT_UNAVAILABLE;
+  let results: SearchResult[];
+  if (config.engineState === "enabled") {
+    const searched = await new BasicMemoryAdapter().search(target.path, config.engineProject ?? target.name, query);
+    if (!searched.ok) {
+      writeError(`search engine failed; engineless fallback was not used. ${searched.message}`);
+      return EXIT_UNAVAILABLE;
+    }
+    results = searched.value.map((result) => ({ ...result, source: "memory" }));
+  } else {
+    results = await searchFiles(target.path, query);
   }
 
   await appendLogEntry(target.path, "query", query);
@@ -694,6 +681,12 @@ async function lintKb(kbName: string | null, args: string[]): Promise<number> {
   const target = await resolveTargetKb(kbName);
   if (target === null) {
     writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    return EXIT_USAGE;
+  }
+
+  const config = await readKbConfig(target.path);
+  if (config.arm !== "wiki") {
+    writeError(`kb lint applies to the wiki Arm; this KB is ${config.arm}`);
     return EXIT_USAGE;
   }
 
@@ -912,76 +905,6 @@ type SearchResult = {
   score: number;
 };
 
-type BasicMemorySearchResult = {
-  title?: unknown;
-  score?: unknown;
-  file_path?: unknown;
-  matched_chunk?: unknown;
-  content?: unknown;
-};
-
-type BasicMemorySearchResponse = {
-  results?: unknown;
-  error?: unknown;
-};
-
-async function searchEngine(
-  target: { name: string; path: string },
-  config: KbConfig,
-  query: string,
-): Promise<SearchResult[] | null> {
-  const project = config.engineProject ?? target.name;
-  const run = await runExternal("bm", ["tool", "search-notes", query, "--project", project], target.path);
-  if (run.code !== 0) {
-    writeError(`search engine failed; engineless fallback was not used. ${firstOutputLine(run)}`);
-    return null;
-  }
-
-  let parsed: BasicMemorySearchResponse;
-  try {
-    parsed = JSON.parse(run.stdout) as BasicMemorySearchResponse;
-  } catch {
-    writeError("search engine failed; engineless fallback was not used. Basic Memory returned non-JSON output.");
-    return null;
-  }
-
-  if (parsed.error !== undefined) {
-    writeError(`search engine failed; engineless fallback was not used. ${String(parsed.error)}`);
-    return null;
-  }
-  if (!Array.isArray(parsed.results)) {
-    writeError("search engine failed; engineless fallback was not used. Basic Memory JSON did not include results.");
-    return null;
-  }
-
-  return parsed.results.map((result) => normalizeBasicMemoryResult(result)).filter((result): result is SearchResult => result !== null);
-}
-
-function normalizeBasicMemoryResult(value: unknown): SearchResult | null {
-  if (value === null || typeof value !== "object") {
-    return null;
-  }
-  const result = value as BasicMemorySearchResult;
-  if (typeof result.file_path !== "string" || result.file_path.length === 0) {
-    return null;
-  }
-
-  const title = typeof result.title === "string" && result.title.length > 0
-    ? result.title.replace(/^summary:\s*/i, "").replace(/\.\.\.$/, "")
-    : titleFromSlug(basename(result.file_path, ".md"));
-  const match = typeof result.matched_chunk === "string" && result.matched_chunk.length > 0
-    ? result.matched_chunk
-    : typeof result.content === "string" ? result.content : "";
-
-  return {
-    ref: result.file_path,
-    title,
-    source: "memory",
-    match,
-    score: typeof result.score === "number" ? result.score : 0,
-  };
-}
-
 async function searchFiles(kbPath: string, query: string): Promise<SearchResult[]> {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const byRef = new Map<string, SearchResult>();
@@ -1175,6 +1098,7 @@ async function defragCandidates(kbPath: string): Promise<DefragCandidates> {
 
 function defragPlaybook(candidates: DefragCandidates): string {
   return `Defrag playbook
+This command prints a defrag playbook only; it does not move, archive, or delete files.
 Deterministic candidates:
 Duplicate slugs:
 ${renderCandidateLines(candidates.duplicateSlugs.map((candidate) => `${candidate.slug}: ${candidate.refs.join(", ")}`))}
@@ -1575,41 +1499,6 @@ async function runSilent(cmd: string, args: string[], cwd: string): Promise<numb
   } catch {
     return 127;
   }
-}
-
-async function commandAvailable(cmd: string): Promise<boolean> {
-  return (await runExternal(cmd, ["--version"], process.cwd())).code !== 127;
-}
-
-type ExternalRun = {
-  code: number;
-  stdout: string;
-  stderr: string;
-};
-
-async function runExternal(cmd: string, args: string[], cwd: string): Promise<ExternalRun> {
-  try {
-    const proc = Bun.spawn([cmd, ...args], {
-      cwd,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    return { code, stdout, stderr };
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return { code: 127, stdout: "", stderr: "" };
-    }
-    throw error;
-  }
-}
-
-function firstOutputLine(run: ExternalRun): string {
-  return `${run.stderr}\n${run.stdout}`.split("\n").map((line) => line.trim()).find(Boolean) ?? `exit ${run.code}`;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
