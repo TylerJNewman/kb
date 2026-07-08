@@ -1,0 +1,3 @@
+{
+  "error": "Timed out after 10s waiting for 'kb-contract-spike' to finish indexing (1 pending change(s) remaining). If no Basic Memory server is running, pending changes are never indexed -- run 'bm reindex --project kb-contract-spike' instead."
+}

@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "title": "summary: One durable observation. #research...",
+      "type": "observation",
+      "score": 1.0,
+      "entity": "example-memory",
+      "permalink": "example-memory/observations/summary/one-durable-observation.-research",
+      "content": "One durable observation. #research",
+      "matched_chunk": "One durable observation. #research",
+      "file_path": "memories/example-memory.md",
+      "metadata": {
+        "tags": [
+          "research"
+        ]
+      },
+      "entity_id": 1,
+      "observation_id": 1,
+      "category": "summary"
+    }
+  ],
+  "current_page": 1,
+  "page_size": 10,
+  "total": 0,
+  "has_more": false
+}

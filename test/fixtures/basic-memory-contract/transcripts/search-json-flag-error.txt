@@ -1,0 +1,7 @@
+$ bm tool search-notes "durable observation" --project kb-contract-spike --json
+Usage: bm tool search-notes [OPTIONS] [QUERY]
+Try 'bm tool search-notes --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ No such option: --json                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+exit=2

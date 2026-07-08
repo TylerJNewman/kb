@@ -1,0 +1,22 @@
+{
+  "results": [
+    {
+      "title": "Example Memory",
+      "type": "entity",
+      "score": 1.0,
+      "entity": "example-memory",
+      "permalink": "example-memory",
+      "content": "- [summary] One durable observation. #research\n- relates_to [[Target Memory]]",
+      "matched_chunk": "- [summary] One durable observation. #research\n- relates_to [[Target Memory]]",
+      "file_path": "memories/example-memory.md",
+      "metadata": {
+        "note_type": "note"
+      },
+      "entity_id": 1
+    }
+  ],
+  "current_page": 1,
+  "page_size": 10,
+  "total": 0,
+  "has_more": false
+}

@@ -1,0 +1,9 @@
+$ bm reindex --project kb-contract-spike --search
+
+Project: kb-contract-spike
+  Rebuilding full-text search index (incremental scan)...
+    Indexing files... 2/2 files | 1/1 batches | 2022/min | ETA --:-- ━━━━━━ 100%
+  done Full-text search index rebuilt
+
+Reindex complete!
+exit=0

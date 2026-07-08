@@ -1,0 +1,14 @@
+{
+  "title": "Example Memory",
+  "permalink": "example-memory",
+  "file_path": "memories/example-memory.md",
+  "content": "\n- [summary] One durable observation. #research\n- relates_to [[Target Memory]]\n",
+  "frontmatter": {
+    "title": "Example Memory",
+    "type": "note",
+    "tags": [
+      "research"
+    ],
+    "permalink": "example-memory"
+  }
+}

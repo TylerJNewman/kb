@@ -1,0 +1,17 @@
+{
+  "projects": [
+    {
+      "name": "kb-contract-spike",
+      "permalink": "kb-contract-spike",
+      "local_path": "/tmp/kb-bm-contract/kb",
+      "cloud_path": "",
+      "cli_route": "local",
+      "mcp_stdio": "stdio",
+      "sync": false,
+      "sync_supported": true,
+      "sync_reason": null,
+      "local_usage": "sync-supported",
+      "is_default": true
+    }
+  ]
+}
