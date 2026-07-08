@@ -8,6 +8,7 @@ export const VERSION = "0.0.0";
 const EXIT_USAGE = 64;
 const EXIT_UNAVAILABLE = 69;
 const SEARCH_ADVISOR_INDEX_ENTRY_THRESHOLD = 3;
+const ARMS = new Set(["wiki", "b0", "b1"]);
 
 const PRODUCT_COMMANDS = new Set([
   "new",
@@ -34,6 +35,7 @@ type ParseResult =
       command: string | null;
       args: string[];
       guide: boolean;
+      arm: string | null;
     }
   | { ok: false; message: string };
 
@@ -70,12 +72,17 @@ export async function main(argv: string[]): Promise<number> {
     return EXIT_USAGE;
   }
 
+  if (parsed.arm !== null && parsed.command !== "new" && parsed.command !== "init") {
+    writeError("--arm is only valid with kb new or kb init");
+    return EXIT_USAGE;
+  }
+
   if (parsed.command === "new") {
-    return createKb(parsed.args);
+    return createKb(parsed.args, parsed.arm);
   }
 
   if (parsed.command === "init") {
-    return initKb(parsed.args);
+    return initKb(parsed.args, parsed.arm);
   }
 
   if (parsed.command === "list") {
@@ -118,6 +125,10 @@ export async function main(argv: string[]): Promise<number> {
     return defragKb(parsed.kbName, parsed.args);
   }
 
+  if (parsed.command === "lint") {
+    return lintKb(parsed.kbName, parsed.args);
+  }
+
   writeError(`command not implemented in this slice: ${parsed.command}`);
   return EXIT_UNAVAILABLE;
 }
@@ -128,6 +139,7 @@ function parseArgs(argv: string[]): ParseResult {
   let kbName: string | null = null;
   let command: string | null = null;
   let guide = false;
+  let arm: string | null = null;
   const args: string[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -167,6 +179,25 @@ function parseArgs(argv: string[]): ParseResult {
       continue;
     }
 
+    if (arg === "--arm") {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("-")) {
+        return { ok: false, message: "--arm requires a value" };
+      }
+      arm = value;
+      i += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--arm=")) {
+      const value = arg.slice("--arm=".length);
+      if (value.length === 0) {
+        return { ok: false, message: "--arm requires a value" };
+      }
+      arm = value;
+      continue;
+    }
+
     if (arg.startsWith("-")) {
       return { ok: false, message: `unknown flag: ${arg}` };
     }
@@ -179,7 +210,7 @@ function parseArgs(argv: string[]): ParseResult {
     command = arg;
   }
 
-  return { ok: true, help, version, kbName, command, args, guide };
+  return { ok: true, help, version, kbName, command, args, guide, arm };
 }
 
 function writeError(message: string): void {
@@ -211,6 +242,9 @@ Rules of thumb:
   Start with: kb new research
   kb new creates under KB Home: ~/kb/<name>/; kb init scaffolds the cwd.
   The default Arm is b0: plain markdown, Basic Memory format, Engine disabled.
+  Implemented Arms: wiki, b0, b1. b2 is deferred because scheduling is not in v1.
+  Retrieval favors b0/b1; curation favors wiki.
+  Drift tax rises with eager wiki curation; use kb lint and reflect when it does.
 
 Conventions:
   stdout is for requested output and playbooks.
@@ -234,9 +268,10 @@ Default behavior:
   Arm: b0
   Engine: disabled
   Git: initialized silently unless the KB is already inside a git repo
+  Use --arm wiki or --arm b1 only when the human has explicitly chosen that Arm.
 
 Usage:
-  kb new <name>
+  kb new <name> [--arm wiki|b0|b1]
 
 Name must be one path segment, for example: research, papers-2026.
 `;
@@ -256,13 +291,19 @@ function initGuideText(): string {
    If yes, wiki can fit. If no, use b0 and let the Advisor suggest reflect or search when the pain is real.
 
 Rule of thumb
+   Implemented Arms: wiki, b0, b1. b2 is deferred because scheduling is not in v1.
    Default to b0 unless the human explicitly wants a curated wiki. b1 is b0 plus the Basic Memory Engine; enable it later over the same files.
 `;
 }
 
-async function createKb(args: string[]): Promise<number> {
+async function createKb(args: string[], arm: string | null): Promise<number> {
   if (args.length !== 1) {
-    writeError("usage: kb new <name>");
+    writeError("usage: kb new <name> [--arm wiki|b0|b1]");
+    return EXIT_USAGE;
+  }
+
+  const selectedArm = validateArm(arm);
+  if (selectedArm === null) {
     return EXIT_USAGE;
   }
 
@@ -277,7 +318,7 @@ async function createKb(args: string[]): Promise<number> {
 
   try {
     await mkdir(kbHome, { recursive: true });
-    await scaffoldKb(kbDir, name);
+    await scaffoldKb(kbDir, name, selectedArm);
     await registerKb(name, kbDir);
   } catch (error) {
     if (isNodeError(error) && error.code === "EEXIST") {
@@ -291,9 +332,14 @@ async function createKb(args: string[]): Promise<number> {
   return 0;
 }
 
-async function initKb(args: string[]): Promise<number> {
+async function initKb(args: string[], arm: string | null): Promise<number> {
   if (args.length !== 0) {
-    writeError("usage: kb init [--guide]");
+    writeError("usage: kb init [--guide] [--arm wiki|b0|b1]");
+    return EXIT_USAGE;
+  }
+
+  const selectedArm = validateArm(arm);
+  if (selectedArm === null) {
     return EXIT_USAGE;
   }
 
@@ -310,7 +356,7 @@ async function initKb(args: string[]): Promise<number> {
   }
 
   try {
-    await scaffoldKb(cwd, name);
+    await scaffoldKb(cwd, name, selectedArm);
     await registerKb(name, cwd);
   } catch (error) {
     if (isNodeError(error) && error.code === "EEXIST") {
@@ -324,7 +370,20 @@ async function initKb(args: string[]): Promise<number> {
   return 0;
 }
 
-async function scaffoldKb(kbDir: string, name: string): Promise<void> {
+function validateArm(arm: string | null): string | null {
+  const selected = arm ?? "b0";
+  if (selected === "b2") {
+    writeError("--arm b2 is deferred for v1; use b1 plus the Advisor maintenance reminders.");
+    return null;
+  }
+  if (!ARMS.has(selected)) {
+    writeError(`unknown Arm: ${selected} (expected wiki, b0, or b1)`);
+    return null;
+  }
+  return selected;
+}
+
+async function scaffoldKb(kbDir: string, name: string, arm = "b0"): Promise<void> {
   if (await exists(join(kbDir, "kb.yaml"))) {
     const error = new Error("KB already exists") as NodeJS.ErrnoException;
     error.code = "EEXIST";
@@ -334,7 +393,7 @@ async function scaffoldKb(kbDir: string, name: string): Promise<void> {
     await mkdir(kbDir);
   }
   await Promise.all([
-    writeFile(join(kbDir, "kb.yaml"), kbYaml(), { flag: "wx" }),
+    writeFile(join(kbDir, "kb.yaml"), kbYaml(arm, name), { flag: "wx" }),
     writeFile(join(kbDir, "AGENTS.md"), agentsMd(), { flag: "wx" }),
     writeFile(join(kbDir, "index.md"), indexMd(), { flag: "wx" }),
     writeFile(join(kbDir, "log.md"), logMd(name), { flag: "wx" }),
@@ -494,7 +553,8 @@ async function addSource(kbName: string | null, args: string[]): Promise<number>
   }
 
   await appendLogEntry(target.path, "ingest", staged.rawFile);
-  process.stdout.write(ingestPlaybook(staged));
+  const config = await readKbConfig(target.path);
+  process.stdout.write(config.arm === "wiki" ? wikiIngestPlaybook(staged) : ingestPlaybook(staged));
   return 0;
 }
 
@@ -621,18 +681,35 @@ async function defragKb(kbName: string | null, args: string[]): Promise<number> 
   return 0;
 }
 
+async function lintKb(kbName: string | null, args: string[]): Promise<number> {
+  if (args.length !== 0) {
+    writeError("usage: kb lint");
+    return EXIT_USAGE;
+  }
+
+  const target = await resolveTargetKb(kbName);
+  if (target === null) {
+    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --kb <name>" : `unknown KB: ${kbName}`);
+    return EXIT_USAGE;
+  }
+
+  process.stdout.write(wikiLintReport(await wikiLintIssues(target.path)));
+  return 0;
+}
+
 function isSafeKbName(name: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && name !== "." && name !== "..";
 }
 
-function kbYaml(): string {
+function kbYaml(arm = "b0", name: string | null = null): string {
+  const engineEnabled = arm === "b1";
   return `schemaVersion: 1
 formatVersion: basic-memory-note-v1
-arm: b0
+arm: ${arm}
 engine:
   basicMemory:
-    state: disabled
-    project: null
+    state: ${engineEnabled ? "enabled" : "disabled"}
+    project: ${engineEnabled ? name ?? "null" : "null"}
 lastReflectAt: null
 `;
 }
@@ -1137,6 +1214,115 @@ Agent half:
 5. Extract observations as "- [category] fact #tag".
 6. Extract relations as "- rel [[Target]]".
 7. Add or update one index.md line: - [[${memoryRef}|${staged.title}]] | category: <category> | summary: <one-line summary>
+`;
+}
+
+function wikiIngestPlaybook(staged: StagedSource): string {
+  const rawRef = `raw/${staged.rawFile}`;
+  const memoryRef = `memories/${staged.memoryFile}`;
+  const urlBehavior = staged.urlReference
+    ? "v1 stages a URL reference only; full HTML archiving is deferred."
+    : "local file copied verbatim into raw/.";
+
+  return `Wiki ingest playbook
+Raw source: ${rawRef}
+Memory target: ${memoryRef}
+URL behavior: ${urlBehavior}
+
+Agent half:
+1. Read ${rawRef} without editing it.
+2. Write or update ${memoryRef} in Basic Memory note format.
+3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
+4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
+5. Add or update one index.md line: - [[${memoryRef}|${staged.title}]] | category: <category> | summary: <one-line summary>
+`;
+}
+
+type WikiLintIssues = {
+  orphanPages: string[];
+  danglingLinks: string[];
+  missingCrossReferences: string[];
+  staleFlags: string[];
+  danglingIndexRefs: string[];
+};
+
+async function wikiLintIssues(kbPath: string): Promise<WikiLintIssues> {
+  const memories = await listMemories(kbPath);
+  const memoryRefs = new Set(memories.map((memory) => memory.ref));
+  const knownLinks = new Set<string>();
+  for (const memory of memories) {
+    knownLinks.add(memory.ref);
+    knownLinks.add(memory.ref.replace(/^memories\//, ""));
+    knownLinks.add(memory.ref.replace(/^memories\//, "").replace(/\.md$/, ""));
+    knownLinks.add(memory.title);
+    knownLinks.add(memory.slug);
+  }
+
+  const indexRefs = indexEntryLines(await readFile(join(kbPath, "index.md"), "utf8"))
+    .map((line) => parseIndexLine(line)?.ref)
+    .filter((ref): ref is string => typeof ref === "string");
+  const indexRefSet = new Set(indexRefs);
+  const danglingLinks: string[] = [];
+  const missingCrossReferences: string[] = [];
+  const staleFlags: string[] = [];
+
+  for (const memory of memories) {
+    const text = await readFile(join(kbPath, memory.ref), "utf8");
+    const links = wikiLinks(text);
+    if (links.length === 0) {
+      missingCrossReferences.push(`${memory.ref} has no [[links]]`);
+    }
+    for (const link of links) {
+      if (!knownLinks.has(link)) {
+        danglingLinks.push(`${memory.ref} -> ${link}`);
+      }
+    }
+    for (const key of ["review_after", "stale_after"]) {
+      const value = readYamlScalar(text, key);
+      if (value !== null && isPastDate(value)) {
+        staleFlags.push(`${memory.ref} ${key} ${value}`);
+      }
+    }
+  }
+
+  return {
+    orphanPages: [...memoryRefs].filter((ref) => !indexRefSet.has(ref)).sort(),
+    danglingLinks: danglingLinks.sort(),
+    missingCrossReferences: missingCrossReferences.sort(),
+    staleFlags: staleFlags.sort(),
+    danglingIndexRefs: indexRefs.filter((ref) => !memoryRefs.has(ref)).sort(),
+  };
+}
+
+function wikiLinks(text: string): string[] {
+  const links: string[] = [];
+  const pattern = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    links.push(match[1].trim());
+  }
+  return links;
+}
+
+function isPastDate(value: string): boolean {
+  const date = Date.parse(value);
+  return Number.isFinite(date) && date < Date.parse(todayIso());
+}
+
+function wikiLintReport(issues: WikiLintIssues): string {
+  return `Wiki lint
+Deterministic structural issues:
+Orphan pages not in index.md:
+${renderCandidateLines(issues.orphanPages)}Dangling [[links]]:
+${renderCandidateLines(issues.danglingLinks)}Missing cross-references:
+${renderCandidateLines(issues.missingCrossReferences)}Stale-by-date flags:
+${renderCandidateLines(issues.staleFlags)}Dangling index refs:
+${renderCandidateLines(issues.danglingIndexRefs)}
+Contradiction review playbook:
+1. Review related pages and stale flags above.
+2. Print a checklist of claims the model thinks may conflict, with file refs.
+3. Update derivatives in memories/ only; never edit raw/.
+4. Do not claim kb lint proves semantic contradictions or note quality.
 `;
 }
 

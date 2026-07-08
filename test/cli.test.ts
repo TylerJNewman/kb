@@ -23,6 +23,9 @@ test("kb --help exits 0 and writes the golden help surface to stdout", async () 
   expect(result.stdout).toContain("kb [--kb <name>] <command> [flags]");
   expect(result.stdout).toContain("kb new creates under KB Home: ~/kb/<name>/");
   expect(result.stdout).toContain("The default Arm is b0");
+  expect(result.stdout).toContain("Implemented Arms: wiki, b0, b1. b2 is deferred");
+  expect(result.stdout).toContain("Retrieval favors b0/b1; curation favors wiki");
+  expect(result.stdout).toContain("Drift tax");
   expect(result.stdout).toContain("stdout is for requested output and playbooks.");
 });
 
@@ -119,6 +122,50 @@ Line format:
 kbs:
   research: ${kbDir}
 `);
+});
+
+test("kb new --arm wiki scaffolds the wiki Arm", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+
+  const result = await harness.runKb(["new", "wiki-research", "--arm", "wiki"]);
+  const kbDir = join(harness.home, "kb", "wiki-research");
+
+  expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: wiki\n");
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+});
+
+test("kb init --arm b1 is accepted and marks the Engine enabled", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+
+  const result = await harness.runKb(["init", "--arm", "b1"]);
+
+  expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(await readFile(join(harness.cwd, "kb.yaml"), "utf8")).toBe(`schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b1
+engine:
+  basicMemory:
+    state: enabled
+    project: cwd
+lastReflectAt: null
+`);
+});
+
+test("--arm b2 is deferred and unknown Arms fail clearly", async () => {
+  const deferred = await harness.runKb(["new", "research", "--arm", "b2"]);
+  const unknown = await harness.runKb(["new", "research", "--arm", "wat"]);
+
+  expect(deferred).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: --arm b2 is deferred for v1; use b1 plus the Advisor maintenance reminders.\n",
+  });
+  expect(unknown).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: unknown Arm: wat (expected wiki, b0, or b1)\n",
+  });
 });
 
 test("kb new does not git init when the KB is already inside a git repo", async () => {
@@ -295,6 +342,8 @@ test("kb init --guide prints the non-interactive chooser", async () => {
   expect(result.stdout).toContain("Corpus size?");
   expect(result.stdout).toContain("Will you maintain it by hand?");
   expect(result.stdout).toContain("Rule of thumb");
+  expect(result.stdout).toContain("Implemented Arms: wiki, b0, b1.");
+  expect(result.stdout).toContain("b2 is deferred");
 });
 
 test("kb add <file> stages raw source unchanged, logs ingest, and prints the ingest playbook", async () => {
@@ -346,6 +395,33 @@ url: https://example.com/articles/a?x=1
 v1 behavior: this is a URL reference only, not a full HTML archive.
 `);
   expect(result.stdout).toContain("URL behavior: v1 stages a URL reference only; full HTML archiving is deferred.");
+});
+
+test("kb add in a wiki KB prints the eager ingest playbook", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  await harness.runKb(["new", "wiki-research", "--arm", "wiki"]);
+  const source = join(harness.cwd, "source.md");
+  await writeFile(source, "# Source\n\nFact one.\n");
+
+  const result = await harness.runKb(["add", source, "--kb", "wiki-research"]);
+  const rawFile = (await readdir(join(harness.home, "kb", "wiki-research", "raw")))[0];
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: `Wiki ingest playbook
+Raw source: raw/${rawFile}
+Memory target: memories/source.md
+URL behavior: local file copied verbatim into raw/.
+
+Agent half:
+1. Read raw/${rawFile} without editing it.
+2. Write or update memories/source.md in Basic Memory note format.
+3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
+4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
+5. Add or update one index.md line: - [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>
+`,
+    stderr: "",
+  });
 });
 
 test("kb note <title> creates a Basic Memory-compatible memory template", async () => {
@@ -875,6 +951,49 @@ Agent half:
   expect(await snapshotKb(kbDir)).toEqual(before);
 });
 
+test("kb lint reports deterministic structural issues and prints contradiction review playbook", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  await harness.runKb(["new", "wiki-research", "--arm", "wiki"]);
+  const kbDir = join(harness.home, "kb", "wiki-research");
+  await writeMemory(kbDir, "alpha.md", "Alpha", "alpha", "review_after: 2026-07-01\n", "See [[Missing Page]].\n");
+  await writeMemory(kbDir, "orphan.md", "Orphan", "orphan", "", "No links here.\n");
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
+- [[memories/alpha.md|Alpha]] | category: research | summary: Alpha.
+- [[memories/missing-index.md|Missing Index]] | category: research | summary: Missing.
+`);
+
+  const result = await harness.run("kb", ["lint", "--kb", "wiki-research"], {
+    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+  });
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: `Wiki lint
+Deterministic structural issues:
+Orphan pages not in index.md:
+- memories/orphan.md
+Dangling [[links]]:
+- memories/alpha.md -> Missing Page
+Missing cross-references:
+- memories/orphan.md has no [[links]]
+Stale-by-date flags:
+- memories/alpha.md review_after 2026-07-01
+Dangling index refs:
+- memories/missing-index.md
+
+Contradiction review playbook:
+1. Review related pages and stale flags above.
+2. Print a checklist of claims the model thinks may conflict, with file refs.
+3. Update derivatives in memories/ only; never edit raw/.
+4. Do not claim kb lint proves semantic contradictions or note quality.
+`,
+    stderr: "",
+  });
+});
+
 test("Advisor suggests reflect only after the threshold elapses", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
@@ -938,7 +1057,14 @@ function searchShape(stdout: string): string[] {
     );
 }
 
-async function writeMemory(kbDir: string, file: string, title: string, permalink: string, extraFrontmatter = ""): Promise<void> {
+async function writeMemory(
+  kbDir: string,
+  file: string,
+  title: string,
+  permalink: string,
+  extraFrontmatter = "",
+  body = "",
+): Promise<void> {
   await writeFile(join(kbDir, "memories", file), `---
 title: ${title}
 type: note
@@ -950,6 +1076,7 @@ ${extraFrontmatter}---
 ## Summary
 
 ${title}
+${body}
 `);
 }
 
