@@ -1,0 +1,8 @@
+schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b0
+engine:
+  basicMemory:
+    state: disabled
+    project: null
+lastReflectAt: null

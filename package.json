@@ -1,0 +1,19 @@
+{
+  "name": "kb-cli",
+  "version": "0.0.0",
+  "type": "module",
+  "files": [
+    "bin",
+    "src"
+  ],
+  "bin": {
+    "kb": "./bin/kb",
+    "kb-cli": "./bin/kb"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
