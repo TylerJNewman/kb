@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { FORMAT_VERSION, INDEX_LINE_FORMAT, memoryFrontmatter, OBSERVATION_EXAMPLE, RELATION_EXAMPLE } from "../src/memory-format";
 
 const fixturesDir = join(import.meta.dir, "fixtures");
 const basicMemoryContractDir = join(fixturesDir, "basic-memory-contract");
@@ -9,7 +10,7 @@ test("kb.yaml fixture pins the scaffold config contract", async () => {
   const yaml = await readFixture("kb.yaml");
 
   expect(yaml).toBe(`schemaVersion: 1
-formatVersion: basic-memory-note-v1
+formatVersion: ${FORMAT_VERSION}
 arm: b0
 engine:
   basicMemory:
@@ -22,7 +23,7 @@ lastReflectAt: null
 test("index.md fixture pins the one-line catalog format", async () => {
   const index = await readFixture("index.md");
 
-  expect(index).toBe("- [[memories/example-memory.md|Example Memory]] | category: research | summary: One-line summary.\n");
+  expect(index).toBe(INDEX_LINE_FORMAT.replace("<file>", "example-memory").replace("<title>", "Example Memory").replace("<category>", "research").replace("<one-line summary>", "One-line summary.") + "\n");
 });
 
 test("log.md fixture pins the greppable entry prefix", async () => {
@@ -34,15 +35,9 @@ test("log.md fixture pins the greppable entry prefix", async () => {
 test("Basic Memory note fixture pins frontmatter, observation, and relation syntax", async () => {
   const note = await readFixture("basic-memory-note.md");
 
-  expect(note).toContain(`---
-title: Example Memory
-type: note
-tags:
-  - research
-permalink: example-memory
----`);
-  expect(note).toContain("- [summary] One durable observation. #research");
-  expect(note).toContain("- relates_to [[Target Memory]]");
+  expect(note).toContain(memoryFrontmatter("Example Memory", "example-memory"));
+  expect(note).toContain(OBSERVATION_EXAMPLE.replace("category", "summary").replace("fact", "One durable observation.").replace("tag", "research"));
+  expect(note).toContain(RELATION_EXAMPLE.replace("Target", "Target Memory"));
 });
 
 test("Basic Memory contract fixtures pin real engine JSON shapes", async () => {

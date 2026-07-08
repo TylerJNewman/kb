@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, parse, resolve } from "node:path";
+import { FORMAT_VERSION, INDEX_LINE_FORMAT, indexLine, memoryFormatPlaybookLines, memoryTemplate } from "./memory-format";
 
 export const VERSION = "0.0.0";
 
 const EXIT_USAGE = 64;
 const EXIT_UNAVAILABLE = 69;
 const SEARCH_ADVISOR_INDEX_ENTRY_THRESHOLD = 3;
-const ARMS = new Set(["wiki", "b0", "b1"]);
+const SCAFFOLD_ARMS = new Set(["wiki", "b0"]);
 
 const PRODUCT_COMMANDS = new Set([
   "new",
@@ -242,7 +243,7 @@ Rules of thumb:
   Start with: kb new research
   kb new creates under KB Home: ~/kb/<name>/; kb init scaffolds the cwd.
   The default Arm is b0: plain markdown, Basic Memory format, Engine disabled.
-  Implemented Arms: wiki, b0, b1. b2 is deferred because scheduling is not in v1.
+  Scaffold Arms: wiki, b0. b1 is reached with kb enable search; b2 is deferred.
   Retrieval favors b0/b1; curation favors wiki.
   Drift tax rises with eager wiki curation; use kb lint and reflect when it does.
 
@@ -268,10 +269,10 @@ Default behavior:
   Arm: b0
   Engine: disabled
   Git: initialized silently unless the KB is already inside a git repo
-  Use --arm wiki or --arm b1 only when the human has explicitly chosen that Arm.
+  Use --arm wiki only when the human has explicitly chosen that Arm.
 
 Usage:
-  kb new <name> [--arm wiki|b0|b1]
+  kb new <name> [--arm wiki|b0]
 
 Name must be one path segment, for example: research, papers-2026.
 `;
@@ -291,14 +292,13 @@ function initGuideText(): string {
    If yes, wiki can fit. If no, use b0 and let the Advisor suggest reflect or search when the pain is real.
 
 Rule of thumb
-   Implemented Arms: wiki, b0, b1. b2 is deferred because scheduling is not in v1.
-   Default to b0 unless the human explicitly wants a curated wiki. b1 is b0 plus the Basic Memory Engine; enable it later over the same files.
+   Scaffold Arms: wiki, b0. b1 is b0 plus the Basic Memory Engine; enable it later over the same files. b2 is deferred because scheduling is not in v1.
 `;
 }
 
 async function createKb(args: string[], arm: string | null): Promise<number> {
   if (args.length !== 1) {
-    writeError("usage: kb new <name> [--arm wiki|b0|b1]");
+    writeError("usage: kb new <name> [--arm wiki|b0]");
     return EXIT_USAGE;
   }
 
@@ -334,7 +334,7 @@ async function createKb(args: string[], arm: string | null): Promise<number> {
 
 async function initKb(args: string[], arm: string | null): Promise<number> {
   if (args.length !== 0) {
-    writeError("usage: kb init [--guide] [--arm wiki|b0|b1]");
+    writeError("usage: kb init [--guide] [--arm wiki|b0]");
     return EXIT_USAGE;
   }
 
@@ -376,8 +376,12 @@ function validateArm(arm: string | null): string | null {
     writeError("--arm b2 is deferred for v1; use b1 plus the Advisor maintenance reminders.");
     return null;
   }
-  if (!ARMS.has(selected)) {
-    writeError(`unknown Arm: ${selected} (expected wiki, b0, or b1)`);
+  if (selected === "b1") {
+    writeError("b1 requires the search engine — create a b0 KB first, then run `kb enable search`.");
+    return null;
+  }
+  if (!SCAFFOLD_ARMS.has(selected)) {
+    writeError(`unknown Arm: ${selected} (expected wiki or b0)`);
     return null;
   }
   return selected;
@@ -701,15 +705,14 @@ function isSafeKbName(name: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && name !== "." && name !== "..";
 }
 
-function kbYaml(arm = "b0", name: string | null = null): string {
-  const engineEnabled = arm === "b1";
+function kbYaml(arm = "b0"): string {
   return `schemaVersion: 1
-formatVersion: basic-memory-note-v1
+formatVersion: ${FORMAT_VERSION}
 arm: ${arm}
 engine:
   basicMemory:
-    state: ${engineEnabled ? "enabled" : "disabled"}
-    project: ${engineEnabled ? name ?? "null" : "null"}
+    state: disabled
+    project: null
 lastReflectAt: null
 `;
 }
@@ -727,7 +730,7 @@ function indexMd(): string {
   return `# KB Index
 
 Line format:
-- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
+${INDEX_LINE_FORMAT}
 `;
 }
 
@@ -1201,6 +1204,8 @@ function ingestPlaybook(staged: StagedSource): string {
     ? "v1 stages a URL reference only; full HTML archiving is deferred."
     : "local file copied verbatim into raw/.";
 
+  const formatLines = memoryFormatPlaybookLines(memoryRef, staged.title);
+
   return `Ingest playbook
 Raw source: ${rawRef}
 Memory target: ${memoryRef}
@@ -1209,11 +1214,11 @@ URL behavior: ${urlBehavior}
 Agent half:
 1. Read ${rawRef} without editing it.
 2. Check memories/ and index.md for an existing Memory on this subject first.
-3. Write ${memoryRef} in Basic Memory note format.
-4. Include an executive summary of about 150 words or less.
-5. Extract observations as "- [category] fact #tag".
-6. Extract relations as "- rel [[Target]]".
-7. Add or update one index.md line: - [[${memoryRef}|${staged.title}]] | category: <category> | summary: <one-line summary>
+3. ${formatLines[0]}
+4. ${formatLines[1]}
+5. ${formatLines[2]}
+6. ${formatLines[3]}
+7. ${formatLines[4]}
 `;
 }
 
@@ -1234,7 +1239,7 @@ Agent half:
 2. Write or update ${memoryRef} in Basic Memory note format.
 3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
 4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
-5. Add or update one index.md line: - [[${memoryRef}|${staged.title}]] | category: <category> | summary: <one-line summary>
+5. Add or update one index.md line: ${indexLine(memoryRef, staged.title)}
 `;
 }
 
@@ -1323,29 +1328,6 @@ Contradiction review playbook:
 2. Print a checklist of claims the model thinks may conflict, with file refs.
 3. Update derivatives in memories/ only; never edit raw/.
 4. Do not claim kb lint proves semantic contradictions or note quality.
-`;
-}
-
-function memoryTemplate(title: string, slug: string): string {
-  return `---
-title: ${title}
-type: note
-tags:
-  - research
-permalink: ${slug}
----
-
-## Summary
-
-TODO
-
-## Observations
-
-- [summary] TODO #research
-
-## Relations
-
-- rel [[Target Memory]]
 `;
 }
 

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { INDEX_LINE_FORMAT, indexLine } from "../src/memory-format";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
 let harness: KbHarness;
@@ -23,7 +25,7 @@ test("kb --help exits 0 and writes the golden help surface to stdout", async () 
   expect(result.stdout).toContain("kb [--kb <name>] <command> [flags]");
   expect(result.stdout).toContain("kb new creates under KB Home: ~/kb/<name>/");
   expect(result.stdout).toContain("The default Arm is b0");
-  expect(result.stdout).toContain("Implemented Arms: wiki, b0, b1. b2 is deferred");
+  expect(result.stdout).toContain("Scaffold Arms: wiki, b0. b1 is reached with kb enable search; b2 is deferred.");
   expect(result.stdout).toContain("Retrieval favors b0/b1; curation favors wiki");
   expect(result.stdout).toContain("Drift tax");
   expect(result.stdout).toContain("stdout is for requested output and playbooks.");
@@ -135,21 +137,17 @@ test("kb new --arm wiki scaffolds the wiki Arm", async () => {
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
 });
 
-test("kb init --arm b1 is accepted and marks the Engine enabled", async () => {
+test("kb init --arm b1 is rejected because enabling search owns Engine state", async () => {
   await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
 
   const result = await harness.runKb(["init", "--arm", "b1"]);
 
-  expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
-  expect(await readFile(join(harness.cwd, "kb.yaml"), "utf8")).toBe(`schemaVersion: 1
-formatVersion: basic-memory-note-v1
-arm: b1
-engine:
-  basicMemory:
-    state: enabled
-    project: cwd
-lastReflectAt: null
-`);
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: b1 requires the search engine — create a b0 KB first, then run `kb enable search`.\n",
+  });
+  await expect(readFile(join(harness.cwd, "kb.yaml"), "utf8")).rejects.toThrow();
 });
 
 test("--arm b2 is deferred and unknown Arms fail clearly", async () => {
@@ -164,7 +162,7 @@ test("--arm b2 is deferred and unknown Arms fail clearly", async () => {
   expect(unknown).toEqual({
     code: 64,
     stdout: "",
-    stderr: "kb: unknown Arm: wat (expected wiki, b0, or b1)\n",
+    stderr: "kb: unknown Arm: wat (expected wiki or b0)\n",
   });
 });
 
@@ -342,7 +340,7 @@ test("kb init --guide prints the non-interactive chooser", async () => {
   expect(result.stdout).toContain("Corpus size?");
   expect(result.stdout).toContain("Will you maintain it by hand?");
   expect(result.stdout).toContain("Rule of thumb");
-  expect(result.stdout).toContain("Implemented Arms: wiki, b0, b1.");
+  expect(result.stdout).toContain("Scaffold Arms: wiki, b0.");
   expect(result.stdout).toContain("b2 is deferred");
 });
 
@@ -373,7 +371,7 @@ Agent half:
 3. Write memories/source.md in Basic Memory note format.
 4. Include an executive summary of about 150 words or less.
 5. Extract observations as "- [category] fact #tag".
-6. Extract relations as "- rel [[Target]]".
+6. Extract relations as "- relates_to [[Target]]".
 7. Add or update one index.md line: - [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>
 `);
 });
@@ -443,7 +441,7 @@ tags:
 permalink: example-memory
 ---`);
   expect(memory).toContain("- [summary] TODO #research");
-  expect(memory).toContain("- rel [[Target Memory]]");
+  expect(memory).toContain("- relates_to [[Target Memory]]");
 });
 
 test("kb log appends and reads greppable append-only entries", async () => {
@@ -721,6 +719,87 @@ uvx basic-memory --version
 bm project add research ${kbDir}
 bm reindex --project research --search
 `);
+});
+
+test("populated B0 enables B1 search with zero content migration", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const sourcePaths = [
+    join(harness.cwd, "alpha.md"),
+    join(harness.cwd, "beta.md"),
+    join(harness.cwd, "gamma.md"),
+  ];
+  await Promise.all([
+    writeFile(sourcePaths[0], "# Alpha\n\nsharedterm alpha source.\n"),
+    writeFile(sourcePaths[1], "# Beta\n\nsharedterm beta source.\n"),
+    writeFile(sourcePaths[2], "# Gamma\n\nsharedterm gamma source.\n"),
+  ]);
+
+  for (const sourcePath of sourcePaths) {
+    expect((await harness.runKb(["add", sourcePath, "--kb", "research"])).code).toBe(0);
+  }
+
+  for (const title of ["Alpha Memory", "Beta Memory", "Gamma Memory"]) {
+    expect((await harness.runKb(["note", title, "--kb", "research"])).code).toBe(0);
+  }
+  await writeMemory(kbDir, "alpha-memory.md", "Alpha Memory", "alpha-memory", "", "\n- [summary] sharedterm alpha memory. #research\n- relates_to [[Beta Memory]]\n");
+  await writeMemory(kbDir, "beta-memory.md", "Beta Memory", "beta-memory", "", "\n- [summary] sharedterm beta memory. #research\n- relates_to [[Gamma Memory]]\n");
+  await writeMemory(kbDir, "gamma-memory.md", "Gamma Memory", "gamma-memory", "", "\n- [summary] sharedterm gamma memory. #research\n- relates_to [[Alpha Memory]]\n");
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+${INDEX_LINE_FORMAT}
+${indexLine("memories/alpha-memory.md", "Alpha Memory", "research", "sharedterm alpha memory.")}
+${indexLine("memories/beta-memory.md", "Beta Memory", "research", "sharedterm beta memory.")}
+${indexLine("memories/gamma-memory.md", "Gamma Memory", "research", "sharedterm gamma memory.")}
+`);
+
+  const beforeSearch = await harness.runKb(["search", "sharedterm", "--kb", "research"]);
+  expect(beforeSearch.code).toBe(0);
+  const beforeRefs = searchRefs(beforeSearch.stdout);
+  expect(beforeRefs).toEqual(["memories/alpha-memory.md", "memories/beta-memory.md", "memories/gamma-memory.md"]);
+  const beforeHashes = await contentHashes(kbDir);
+
+  await harness.writeFakeExecutable(
+    "bm",
+    `#!/bin/sh
+printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then
+  echo "Project '$3' added successfully"
+  exit 0
+fi
+if [ "$1" = "reindex" ]; then
+  echo "Reindex complete!"
+  exit 0
+fi
+if [ "$1" = "tool" ] && [ "$2" = "search-notes" ]; then
+  /bin/cat <<'JSON'
+{"results":[
+  {"title":"Alpha Memory","file_path":"memories/alpha-memory.md","matched_chunk":"sharedterm alpha memory.","score":0.9},
+  {"title":"Beta Memory","file_path":"memories/beta-memory.md","matched_chunk":"sharedterm beta memory.","score":0.8},
+  {"title":"Gamma Memory","file_path":"memories/gamma-memory.md","matched_chunk":"sharedterm gamma memory.","score":0.7}
+]}
+JSON
+  exit 0
+fi
+exit 2
+`,
+  );
+  await harness.writeFakeExecutable("uvx", "#!/bin/sh\necho 'uvx should not be needed when bm exists' >&2\nexit 2\n");
+
+  const enabled = await harness.runKb(["enable", "search", "--kb", "research"]);
+  expect(enabled).toEqual({ code: 0, stdout: "Search enabled for research.\n", stderr: "" });
+  const afterHashes = await contentHashes(kbDir);
+  const changed = changedHashes(beforeHashes, afterHashes);
+  expect(changed).toEqual(["kb.yaml"]);
+  for (const ref of ["raw/", "memories/", "index.md", "log.md"]) {
+    expect(changed.some((path) => path === ref || path.startsWith(ref))).toBe(false);
+  }
+
+  const afterSearch = await harness.runKb(["search", "sharedterm", "--kb", "research"]);
+  expect(afterSearch.code).toBe(0);
+  expect(searchRefs(afterSearch.stdout)).toEqual(beforeRefs);
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toContain("bm tool search-notes sharedterm --project research\n");
 });
 
 test("kb enable search is idempotent once already enabled", async () => {
@@ -1093,6 +1172,36 @@ async function snapshotKb(kbDir: string): Promise<Record<string, string>> {
     snapshot[`${path}:mtime`] = String((await stat(join(kbDir, path))).mtimeMs);
   }
   return snapshot;
+}
+
+async function contentHashes(root: string, dir = ""): Promise<Record<string, string>> {
+  const hashes: Record<string, string> = {};
+  for (const entry of await readdir(join(root, dir), { withFileTypes: true })) {
+    if (entry.name === ".git") {
+      continue;
+    }
+    const rel = dir === "" ? entry.name : join(dir, entry.name);
+    if (entry.isDirectory()) {
+      Object.assign(hashes, await contentHashes(root, rel));
+      continue;
+    }
+    const bytes = await readFile(join(root, rel));
+    hashes[rel] = createHash("sha256").update(bytes).digest("hex");
+  }
+  return hashes;
+}
+
+function changedHashes(before: Record<string, string>, after: Record<string, string>): string[] {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter((path) => before[path] !== after[path])
+    .sort();
+}
+
+function searchRefs(stdout: string): string[] {
+  return stdout
+    .split("\n")
+    .map((line) => /^\d+\. ([^ ]+) \| /.exec(line)?.[1])
+    .filter((ref): ref is string => typeof ref === "string");
 }
 
 async function listTree(root: string): Promise<string[]> {
