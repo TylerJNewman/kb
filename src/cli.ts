@@ -13,6 +13,7 @@ const SEARCH_ADVISOR_INDEX_ENTRY_THRESHOLD = 3;
 const SCAFFOLD_ARMS = new Set(["wiki", "b0"]);
 
 const PRODUCT_COMMANDS = new Set([
+  "start",
   "new",
   "init",
   "list",
@@ -59,6 +60,11 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (parsed.help && parsed.command === "start") {
+    process.stdout.write(startHelpText());
+    return 0;
+  }
+
   if (parsed.command === "init" && parsed.guide) {
     process.stdout.write(initGuideText());
     return 0;
@@ -81,6 +87,10 @@ export async function main(argv: string[]): Promise<number> {
 
   if (parsed.command === "new") {
     return createKb(parsed.args, parsed.arm);
+  }
+
+  if (parsed.command === "start") {
+    return startKb(parsed.args);
   }
 
   if (parsed.command === "init") {
@@ -238,10 +248,11 @@ Global flags:
   --version      Print the CLI version.
 
 Commands:
-  new init list status add note search read log enable reflect defrag lint
+  start new init list status add note search read log enable reflect defrag lint
 
 Rules of thumb:
-  Start with: kb new research
+  Start with: kb start
+  kb start prints the first-run path: new -> add -> agent writes Memory -> search -> status.
   kb new creates under KB Home: ~/kb/<name>/; kb init scaffolds the cwd.
   The default Arm is b0: plain markdown, Basic Memory format, Engine disabled.
   Scaffold Arms: wiki, b0. b1 is reached with kb enable search; b2 is deferred.
@@ -252,6 +263,19 @@ Conventions:
   stdout is for requested output and playbooks.
   stderr is for errors and diagnostics.
   usage errors exit 64; unavailable router stubs exit 69.
+`;
+}
+
+function startHelpText(): string {
+  return `kb start
+
+Print a non-interactive first-run walkthrough for a new user or their agent.
+
+Usage:
+  kb start
+
+What it teaches:
+  new -> add -> agent writes Memory from the playbook -> search -> status
 `;
 }
 
@@ -295,6 +319,85 @@ function initGuideText(): string {
 Rule of thumb
    Scaffold Arms: wiki, b0. b1 is b0 plus the Basic Memory Engine; enable it later over the same files. b2 is deferred because scheduling is not in v1.
 `;
+}
+
+async function startKb(args: string[]): Promise<number> {
+  if (args.length !== 0) {
+    writeError("usage: kb start");
+    return EXIT_USAGE;
+  }
+
+  const registry = await loadRegistry();
+  const kbHome = join(homedir(), "kb");
+  if (registry.kbs.size === 0) {
+    process.stdout.write(`First run
+
+KB Home: ${kbHome}
+
+1. Create your first KB.
+   kb new research
+
+2. Add one raw source. kb files it, then prints a Playbook.
+   printf 'hello world memory systems' > hello.txt
+   kb --kb research add hello.txt
+
+3. Agent step: follow the printed Playbook.
+   Write the Memory in ${join(kbHome, "research", "memories")} and keep raw/ immutable.
+
+4. Search what the agent wrote.
+   kb --kb research search "hello world"
+
+5. Check state and the Advisor's next suggestion.
+   kb --kb research status
+
+Rules of thumb:
+  kb does bookkeeping; the agent does meaning.
+  Raw sources stay in raw/. Memories are derivatives in memories/.
+  Start in b0. Enable search only when the Advisor suggests it.
+`);
+    return 0;
+  }
+
+  const entries = sortedRegistryEntries(registry);
+  const targetName = registry.defaultKb ?? entries[0]![0];
+  const targetPath = registry.kbs.get(targetName)!;
+  const config = await readKbConfig(targetPath);
+  const counts = await countKbFiles(targetPath);
+  const advisor = advisorSuggestions(config, counts);
+
+  process.stdout.write(`First run
+
+KB Home: ${kbHome}
+
+Known KBs:
+${renderRegistryLines(registry)}
+
+Suggested next step for ${targetName}:
+${renderStartNextStep(targetName, counts, advisor)}
+
+Hello-world loop:
+1. Create a KB when you need another project.
+   kb new research
+
+2. Add one raw source. kb files it, then prints a Playbook.
+   printf 'hello world memory systems' > hello.txt
+   kb --kb ${targetName} add hello.txt
+
+3. Agent step: follow the printed Playbook.
+   Write the Memory in ${join(targetPath, "memories")} and keep raw/ immutable.
+
+4. Search what the agent wrote.
+   kb --kb ${targetName} search "hello world"
+
+5. Check state and the Advisor's next suggestion.
+   kb --kb ${targetName} status
+
+Rules of thumb:
+  kb does bookkeeping; the agent does meaning.
+  Raw sources stay in raw/. Memories are derivatives in memories/.
+  Start in b0. Enable search only when the Advisor suggests it.
+`);
+  return 0;
 }
 
 async function createKb(args: string[], arm: string | null): Promise<number> {
@@ -421,10 +524,7 @@ async function listKbs(): Promise<number> {
     return 0;
   }
 
-  const lines = [...registry.kbs.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, path]) => `${name === registry.defaultKb ? "* " : "  "}${name} ${path}`);
-  process.stdout.write(`${lines.join("\n")}\n`);
+  process.stdout.write(`${renderRegistryLines(registry)}\n`);
   return 0;
 }
 
@@ -1369,6 +1469,29 @@ type Registry = {
   defaultKb: string | null;
   kbs: Map<string, string>;
 };
+
+function sortedRegistryEntries(registry: Registry): [string, string][] {
+  return [...registry.kbs.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
+function renderRegistryLines(registry: Registry): string {
+  return sortedRegistryEntries(registry)
+    .map(([name, path]) => `${name === registry.defaultKb ? "* " : "  "}${name} ${path}`)
+    .join("\n");
+}
+
+function renderStartNextStep(name: string, counts: KbCounts, advisor: string[]): string {
+  if (advisor.length > 0) {
+    return `- ${advisor[0]}`;
+  }
+  if (counts.sources === 0) {
+    return `- Add a source: kb --kb ${name} add <file-or-url>`;
+  }
+  if (counts.memories === 0) {
+    return "- Follow the last add Playbook and write the first Memory in memories/.";
+  }
+  return `- Ask a question: kb --kb ${name} search "hello world"`;
+}
 
 async function registerKb(name: string, path: string): Promise<void> {
   const registry = await loadRegistry();

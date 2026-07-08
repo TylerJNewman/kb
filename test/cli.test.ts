@@ -23,6 +23,9 @@ test("kb --help exits 0 and writes the golden help surface to stdout", async () 
   expect(result.stdout).toContain("Create and grow local-first markdown knowledge bases.");
   expect(result.stdout).toContain("Usage:");
   expect(result.stdout).toContain("kb [--kb <name>] <command> [flags]");
+  expect(result.stdout).toContain("Commands:\n  start new init list status add note search read log enable reflect defrag lint");
+  expect(result.stdout).toContain("Start with: kb start");
+  expect(result.stdout).toContain("kb start prints the first-run path");
   expect(result.stdout).toContain("kb new creates under KB Home: ~/kb/<name>/");
   expect(result.stdout).toContain("The default Arm is b0");
   expect(result.stdout).toContain("Scaffold Arms: wiki, b0. b1 is reached with kb enable search; b2 is deferred.");
@@ -81,6 +84,41 @@ test("kb new --help teaches what a KB is and where it lands", async () => {
   expect(result.stdout).toContain("raw/       immutable raw sources");
   expect(result.stdout).toContain("memories/  derivatives written from raw sources");
   expect(result.stdout).toContain("Git: initialized silently unless the KB is already inside a git repo");
+});
+
+test("kb start on an empty environment prints create-your-first guidance", async () => {
+  const result = await harness.runKb(["start"]);
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toContain("First run");
+  expect(result.stdout).toContain(`KB Home: ${join(harness.home, "kb")}`);
+  expect(result.stdout).toContain("1. Create your first KB.");
+  expect(result.stdout).toContain("kb new research");
+  expect(result.stdout).toContain("kb --kb research add hello.txt");
+  expect(result.stdout).toContain("Agent step: follow the printed Playbook.");
+  expect(result.stdout).toContain(`Write the Memory in ${join(harness.home, "kb", "research", "memories")}`);
+  expect(result.stdout).toContain('kb --kb research search "hello world"');
+  expect(result.stdout).toContain("kb --kb research status");
+});
+
+test("kb start --help prints start help", async () => {
+  const result = await harness.runKb(["start", "--help"]);
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: `kb start
+
+Print a non-interactive first-run walkthrough for a new user or their agent.
+
+Usage:
+  kb start
+
+What it teaches:
+  new -> add -> agent writes Memory from the playbook -> search -> status
+`,
+    stderr: "",
+  });
 });
 
 test("kb new research creates the B0 scaffold and initializes git silently", async () => {
@@ -255,6 +293,23 @@ test("kb list shows all KBs and the default", async () => {
 `,
     stderr: "",
   });
+});
+
+test("kb start with an existing KB lists it and suggests the next step", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "index.md"), indexWithEntries(3));
+
+  const result = await harness.runKb(["start"]);
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toContain("Known KBs:\n* research ");
+  expect(result.stdout).toContain(kbDir);
+  expect(result.stdout).toContain("Suggested next step for research:");
+  expect(result.stdout).toContain("- Try `kb enable search`: 3 index entries make hybrid search more useful than plain file search.");
+  expect(result.stdout).toContain("kb --kb research add hello.txt");
+  expect(result.stdout).toContain(`Write the Memory in ${join(kbDir, "memories")}`);
 });
 
 test("--kb resolves from an unrelated cwd and missing targets fail clearly", async () => {
