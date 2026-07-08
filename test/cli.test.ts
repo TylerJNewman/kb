@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
@@ -67,12 +67,12 @@ test("bad flag exits non-zero and writes stderr only", async () => {
 });
 
 test("unimplemented product commands are router stubs", async () => {
-  const result = await harness.runKb(["add"]);
+  const result = await harness.runKb(["search"]);
 
   expect(result).toEqual({
     code: 69,
     stdout: "",
-    stderr: "kb: command not implemented in this slice: add\n",
+    stderr: "kb: command not implemented in this slice: search\n",
   });
 });
 
@@ -290,6 +290,125 @@ test("kb init --guide prints the non-interactive chooser", async () => {
   expect(result.stdout).toContain("Will you maintain it by hand?");
   expect(result.stdout).toContain("Rule of thumb");
 });
+
+test("kb add <file> stages raw source unchanged, logs ingest, and prints the ingest playbook", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "source.md");
+  const sourceText = "# Source\n\nFact one.\n";
+  await writeFile(source, sourceText);
+
+  const result = await harness.runKb(["add", source, "--kb", "research"]);
+  const kbDir = join(harness.home, "kb", "research");
+  const rawFiles = await readdir(join(kbDir, "raw"));
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(rawFiles).toHaveLength(1);
+  expect(rawFiles[0]).toMatch(/^source-[a-f0-9]{12}\.md$/);
+  expect(await readFile(join(kbDir, "raw", rawFiles[0]), "utf8")).toBe(sourceText);
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain(`ingest | ${rawFiles[0]}`);
+  expect(result.stdout).toBe(`Ingest playbook
+Raw source: raw/${rawFiles[0]}
+Memory target: memories/source.md
+URL behavior: local file copied verbatim into raw/.
+
+Agent half:
+1. Read raw/${rawFiles[0]} without editing it.
+2. Check memories/ and index.md for an existing Memory on this subject first.
+3. Write memories/source.md in Basic Memory note format.
+4. Include an executive summary of about 150 words or less.
+5. Extract observations as "- [category] fact #tag".
+6. Extract relations as "- rel [[Target]]".
+7. Add or update one index.md line: - [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>
+`);
+});
+
+test("kb add <url> stages a v1 URL reference instead of archiving HTML", async () => {
+  await scaffoldResearchKb();
+
+  const result = await harness.runKb(["add", "https://example.com/articles/a?x=1", "--kb=research"]);
+  const kbDir = join(harness.home, "kb", "research");
+  const rawFiles = await readdir(join(kbDir, "raw"));
+
+  expect(result.code).toBe(0);
+  expect(rawFiles).toHaveLength(1);
+  expect(rawFiles[0]).toMatch(/^example-com-articles-a-[a-f0-9]{12}\.url\.md$/);
+  expect(await readFile(join(kbDir, "raw", rawFiles[0]), "utf8")).toBe(`# URL Reference
+
+url: https://example.com/articles/a?x=1
+
+v1 behavior: this is a URL reference only, not a full HTML archive.
+`);
+  expect(result.stdout).toContain("URL behavior: v1 stages a URL reference only; full HTML archiving is deferred.");
+});
+
+test("kb note <title> creates a Basic Memory-compatible memory template", async () => {
+  await scaffoldResearchKb();
+
+  const result = await harness.runKb(["note", "Example Memory", "--kb", "research"]);
+  const memory = await readFile(join(harness.home, "kb", "research", "memories", "example-memory.md"), "utf8");
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: "Created memories/example-memory.md\n",
+    stderr: "",
+  });
+  expect(memory).toContain(`---
+title: Example Memory
+type: note
+tags:
+  - research
+permalink: example-memory
+---`);
+  expect(memory).toContain("- [summary] TODO #research");
+  expect(memory).toContain("- rel [[Target Memory]]");
+});
+
+test("kb log appends and reads greppable append-only entries", async () => {
+  await scaffoldResearchKb();
+
+  const appended = await harness.runKb(["log", "question | How does this work?", "--kb", "research"]);
+  const read = await harness.runKb(["log", "--kb", "research"]);
+
+  expect(appended).toEqual({ code: 0, stdout: "", stderr: "" });
+  expect(read.code).toBe(0);
+  expect(read.stderr).toBe("");
+  expect(read.stdout).toContain("created | research");
+  expect(read.stdout).toContain("question | How does this work?");
+});
+
+test("kb read <ref> returns the memory and points at the tiered read order", async () => {
+  await scaffoldResearchKb();
+  await harness.runKb(["note", "Example Memory", "--kb", "research"]);
+
+  const result = await harness.runKb(["read", "example-memory", "--kb", "research"]);
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toContain("Tiered read order: index.md -> executive summary -> derivatives in memories/ -> raw sources only when needed.");
+  expect(result.stdout).toContain("title: Example Memory");
+  expect(result.stdout).toContain("- [summary] TODO #research");
+});
+
+test("daily commands do not mutate existing raw contents", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "source.txt");
+  await writeFile(source, "original raw bytes\n");
+  await harness.runKb(["add", source, "--kb", "research"]);
+  const rawFile = (await readdir(join(harness.home, "kb", "research", "raw")))[0];
+  const rawPath = join(harness.home, "kb", "research", "raw", rawFile);
+
+  await harness.runKb(["note", "Other", "--kb", "research"]);
+  await harness.runKb(["log", "question | Check raw", "--kb", "research"]);
+  await harness.runKb(["read", "other", "--kb", "research"]);
+
+  expect(await readFile(rawPath, "utf8")).toBe("original raw bytes\n");
+});
+
+async function scaffoldResearchKb(): Promise<void> {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  await harness.runKb(["new", "research"]);
+}
 
 async function listTree(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
