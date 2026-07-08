@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -15,7 +15,7 @@ export type KbHarness = {
   cwd: string;
   pathDir: string;
   runKb: (args: string[]) => Promise<KbRun>;
-  run: (cmd: string, args: string[]) => Promise<KbRun>;
+  run: (cmd: string, args: string[], options?: { cwd?: string }) => Promise<KbRun>;
   writeFakeExecutable: (name: string, body: string) => Promise<string>;
   listCwd: () => Promise<string[]>;
   cleanup: () => Promise<void>;
@@ -25,7 +25,7 @@ const repoRoot = resolve(import.meta.dir, "../..");
 const kbBin = join(repoRoot, "bin/kb");
 
 export async function createKbHarness(): Promise<KbHarness> {
-  const root = await mkdtemp(join(tmpdir(), "kb-cli-test-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "kb-cli-test-")));
   const home = join(root, "home");
   const xdgConfigHome = join(root, "xdg");
   const cwd = join(root, "cwd");
@@ -53,9 +53,9 @@ export async function createKbHarness(): Promise<KbHarness> {
     "#!/bin/sh\nexec \"$BUN_BIN\" \"$KB_BIN\" \"$@\"\n",
   );
 
-  const run = async (cmd: string, args: string[]): Promise<KbRun> => {
+  const run = async (cmd: string, args: string[], options?: { cwd?: string }): Promise<KbRun> => {
     const proc = Bun.spawn([cmd, ...args], {
-      cwd,
+      cwd: options?.cwd ?? cwd,
       env,
       stdout: "pipe",
       stderr: "pipe",
