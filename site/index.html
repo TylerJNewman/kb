@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>kb CLI onboarding</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f4ed;
+      --paper: #fffcf5;
+      --ink: #23201a;
+      --muted: #686154;
+      --line: #d8cec0;
+      --accent: #2f7d6d;
+      --accent-ink: #ffffff;
+      --soft: #e8efe9;
+      --code: #191714;
+      --code-ink: #f7f1e6;
+      --warn: #9b5b15;
+      --shadow: 0 18px 55px rgba(48, 40, 25, .11);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #151615;
+        --paper: #20211f;
+        --ink: #f4efe5;
+        --muted: #bbb0a0;
+        --line: #3b3b35;
+        --accent: #7fd3bf;
+        --accent-ink: #10201c;
+        --soft: #1c2b27;
+        --code: #0d0e0d;
+        --code-ink: #f4efe5;
+        --warn: #f0b667;
+        --shadow: 0 20px 60px rgba(0, 0, 0, .35);
+      }
+    }
+
+    [data-theme="light"] {
+      color-scheme: light;
+      --bg: #f7f4ed;
+      --paper: #fffcf5;
+      --ink: #23201a;
+      --muted: #686154;
+      --line: #d8cec0;
+      --accent: #2f7d6d;
+      --accent-ink: #ffffff;
+      --soft: #e8efe9;
+      --code: #191714;
+      --code-ink: #f7f1e6;
+      --warn: #9b5b15;
+      --shadow: 0 18px 55px rgba(48, 40, 25, .11);
+    }
+
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #151615;
+      --paper: #20211f;
+      --ink: #f4efe5;
+      --muted: #bbb0a0;
+      --line: #3b3b35;
+      --accent: #7fd3bf;
+      --accent-ink: #10201c;
+      --soft: #1c2b27;
+      --code: #0d0e0d;
+      --code-ink: #f4efe5;
+      --warn: #f0b667;
+      --shadow: 0 20px 60px rgba(0, 0, 0, .35);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(90deg, color-mix(in srgb, var(--line) 34%, transparent) 1px, transparent 1px) 0 0 / 24px 24px,
+        var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+      min-width: 320px;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(180deg, var(--bg), transparent 32rem);
+      z-index: -1;
+    }
+
+    a { color: inherit; }
+    button, summary { font: inherit; }
+    button {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--ink);
+      cursor: pointer;
+    }
+
+    button:focus-visible, a:focus-visible, summary:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--accent) 70%, transparent);
+      outline-offset: 3px;
+    }
+
+    .wrap {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    header {
+      padding: 18px 0 0;
+    }
+
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--accent);
+    }
+
+    .nav-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .pill {
+      min-height: 38px;
+      padding: 8px 13px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      text-decoration: none;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .hero {
+      min-height: min(760px, calc(100svh - 40px));
+      display: grid;
+      align-items: center;
+      padding: 48px 0 56px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr);
+      gap: clamp(28px, 6vw, 78px);
+      align-items: center;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      font-size: clamp(3.4rem, 14vw, 10rem);
+      line-height: .84;
+      letter-spacing: 0;
+      margin-bottom: 24px;
+      max-width: 7ch;
+    }
+
+    .lede {
+      font-size: clamp(1.25rem, 2.2vw, 1.75rem);
+      line-height: 1.28;
+      max-width: 760px;
+      color: var(--ink);
+    }
+
+    .subtle { color: var(--muted); }
+
+    .cta-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 26px;
+    }
+
+    .cta {
+      background: var(--accent);
+      color: var(--accent-ink);
+      border-color: transparent;
+      padding: 12px 18px;
+      min-height: 46px;
+    }
+
+    .terminal-card {
+      background: var(--code);
+      color: var(--code-ink);
+      border-radius: 8px;
+      border: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .terminal-top {
+      display: flex;
+      gap: 7px;
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.11);
+    }
+
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #d9b46b; }
+    .dot:nth-child(2) { background: #8fc79c; }
+    .dot:nth-child(3) { background: #dc7b73; }
+
+    pre, code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: .93rem;
+    }
+
+    pre {
+      margin: 0;
+      padding: 18px;
+      overflow: auto;
+      white-space: pre;
+    }
+
+    main section {
+      padding: clamp(46px, 8vw, 90px) 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, .78fr) minmax(0, 1fr);
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 28px;
+    }
+
+    h2 {
+      font-size: clamp(2rem, 5vw, 4.5rem);
+      line-height: .95;
+      letter-spacing: 0;
+      margin-bottom: 0;
+      max-width: 10ch;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      text-transform: uppercase;
+      font-size: .78rem;
+      font-weight: 900;
+      letter-spacing: .12em;
+      margin-bottom: 10px;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .panel, details {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel {
+      padding: clamp(18px, 3vw, 28px);
+    }
+
+    .panel h3 {
+      font-size: 1.45rem;
+      margin-bottom: 8px;
+    }
+
+    .big-label {
+      font-size: clamp(2rem, 6vw, 5rem);
+      line-height: .9;
+      font-weight: 900;
+      margin-bottom: 12px;
+    }
+
+    .voice-box {
+      display: grid;
+      grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .segmented button {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      padding: 10px 12px;
+      font-weight: 800;
+    }
+
+    .segmented button[aria-pressed="true"] {
+      background: var(--accent);
+      color: var(--accent-ink);
+    }
+
+    .tree {
+      overflow-x: auto;
+      padding: 0;
+    }
+
+    .tree-row {
+      display: grid;
+      grid-template-columns: 190px minmax(220px, 1fr);
+      gap: 18px;
+      align-items: start;
+      min-width: 560px;
+      padding: 14px 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .tree-row:first-child { border-top: 0; }
+    .path {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 800;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .step {
+      padding: 18px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-height: 160px;
+    }
+
+    .step strong {
+      display: block;
+      font-size: 1.15rem;
+      margin-bottom: 8px;
+    }
+
+    .quiz {
+      display: grid;
+      gap: 10px;
+    }
+
+    details {
+      padding: 0;
+      overflow: clip;
+    }
+
+    summary {
+      cursor: pointer;
+      padding: 17px 18px;
+      font-weight: 850;
+      list-style-position: outside;
+    }
+
+    details > div {
+      padding: 0 18px 18px;
+      color: var(--muted);
+    }
+
+    .code-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.11);
+    }
+
+    .copy {
+      color: var(--code-ink);
+      background: transparent;
+      border-color: rgba(255,255,255,.28);
+      min-height: 34px;
+      padding: 6px 11px;
+      font-weight: 800;
+    }
+
+    .honest {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .fact {
+      border: 1px solid var(--line);
+      background: var(--paper);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    footer {
+      padding: 36px 0 48px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+    }
+
+    .repo-text {
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow-wrap: anywhere;
+    }
+
+    @media (hover: hover) {
+      .pill:hover, button:hover, details:hover {
+        transform: translateY(-1px);
+      }
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .pill, button, details, .panel, .step, .fact {
+        transition: transform .18s ease, background-color .18s ease, border-color .18s ease;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .hero-grid, .section-head, .split, .voice-box, .steps, .honest {
+        grid-template-columns: 1fr;
+      }
+      .hero {
+        min-height: auto;
+        padding-top: 36px;
+      }
+      nav {
+        align-items: flex-start;
+      }
+      .nav-actions {
+        max-width: 170px;
+      }
+      h1 { max-width: 6ch; }
+    }
+
+    @media (max-width: 380px) {
+      .wrap { width: min(100% - 22px, 1120px); }
+      .pill { width: 100%; }
+      .nav-actions { max-width: 132px; }
+      pre { padding: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="wrap">
+    <nav aria-label="Page controls">
+      <div class="brand"><span class="mark" aria-hidden="true">kb</span><span>kb CLI</span></div>
+      <div class="nav-actions">
+        <button class="pill" id="themeToggle" type="button" aria-label="Switch color theme">Theme: auto</button>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div class="hero-grid">
+        <div>
+          <p class="eyebrow">Local-first markdown knowledge bases</p>
+          <h1 id="hero-title">Tiny clerk. Real memory.</h1>
+          <p class="lede"><strong>kb is a filing clerk that lives in your terminal.</strong> Your AI thinks; kb does the paperwork. Together they turn scattered reading into a knowledge base you own as plain text files.</p>
+          <div class="cta-row">
+            <a class="pill cta" href="#hello">Start in 5 minutes</a>
+            <a class="pill" href="#quiz">Try the quiz</a>
+          </div>
+        </div>
+        <div class="terminal-card" aria-label="kb terminal preview">
+          <div class="terminal-top" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+          <pre><code>$ bunx kb-cli new research
+creates ~/kb/research/
+
+$ kb --kb research add paper.txt
+copies source to raw/
+prints the playbook
+
+AI reads playbook
+writes memory to memories/</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap" id="core" aria-labelledby="core-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">The core idea</p>
+          <h2 id="core-title">Split the work.</h2>
+        </div>
+        <p class="subtle">Knowledge bases fail when thinking and bookkeeping get mixed together. kb keeps the reliable job in reliable code and rents the smart job from the agent you already use.</p>
+      </div>
+
+      <div class="split" aria-label="The split between kb and AI">
+        <article class="panel">
+          <div class="big-label">kb</div>
+          <h3>Bookkeeping</h3>
+          <p>Copy the file, protect the raw source, update the index, stamp the log, print the playbook. Deterministic code. No LLM inside.</p>
+        </article>
+        <article class="panel">
+          <div class="big-label">AI</div>
+          <h3>Thinking</h3>
+          <p>Read the paper, understand it, write the summary, notice links and contradictions. The model does meaning; kb never pretends to.</p>
+        </article>
+      </div>
+
+      <div class="panel voice-box" style="margin-top:14px">
+        <div>
+          <p class="eyebrow">Two voices</p>
+          <div class="segmented" role="group" aria-label="Choose explanation voice">
+            <button type="button" id="grugVoice" aria-pressed="true">Grug</button>
+            <button type="button" id="feynmanVoice" aria-pressed="false">Feynman</button>
+          </div>
+        </div>
+        <p id="voiceText">kb not brain. kb clerk. Clerk put paper in right box, write line on map, make log. AI read and think. This good. Smart thing can be messy; filing thing must never be messy.</p>
+      </div>
+    </section>
+
+    <section class="wrap" id="layout" aria-labelledby="layout-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">What you get</p>
+          <h2 id="layout-title">A folder, not a trap.</h2>
+        </div>
+        <p class="subtle">Run one command and get plain markdown. Open it in Obsidian, keep it in git, or inspect it with ordinary tools.</p>
+      </div>
+      <div class="panel tree" role="table" aria-label="kb research folder layout">
+        <div class="tree-row" role="row"><span class="path" role="cell">~/kb/research/</span><span role="cell">Your knowledge base folder.</span></div>
+        <div class="tree-row" role="row"><span class="path" role="cell">raw/</span><span role="cell">Original papers and sources, immutable: the vault.</span></div>
+        <div class="tree-row" role="row"><span class="path" role="cell">memories/</span><span role="cell">AI-written summaries and derived notes.</span></div>
+        <div class="tree-row" role="row"><span class="path" role="cell">index.md</span><span role="cell">One line per memory: the cheap map.</span></div>
+        <div class="tree-row" role="row"><span class="path" role="cell">log.md</span><span role="cell">History of what you added and asked.</span></div>
+        <div class="tree-row" role="row"><span class="path" role="cell">kb.yaml</span><span role="cell">Settings for this KB.</span></div>
+      </div>
+    </section>
+
+    <section class="wrap" id="grow" aria-labelledby="grow-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Start small, grow later</p>
+          <h2 id="grow-title">No migration story.</h2>
+        </div>
+        <p class="subtle">The default arm is B0: plain files, no engine, useful at small scale. When the pain appears, the Advisor explains the next move.</p>
+      </div>
+      <div class="steps">
+        <article class="step"><strong>1. Begin engineless</strong><span>B0 is just files and conventions. Search reads the index and matches text.</span></article>
+        <article class="step"><strong>2. Feel the slowdown</strong><span>As the KB grows, simple search becomes less pleasant.</span></article>
+        <article class="step"><strong>3. Advisor suggests</strong><span>It says why `kb enable search` is useful. It never acts for you.</span></article>
+        <article class="step"><strong>4. Same files</strong><span>Basic Memory is enabled behind the same markdown. Nothing moves. Nothing is rewritten.</span></article>
+      </div>
+    </section>
+
+    <section class="wrap" id="quiz" aria-labelledby="quiz-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Check yourself</p>
+          <h2 id="quiz-title">Six questions.</h2>
+        </div>
+        <p class="subtle">Try the question first, then open the answer. These are the exact answers from the starter guide.</p>
+      </div>
+      <div class="quiz">
+        <details><summary>1. The split. kb does one job, the AI does the other. Which is which, and why split them?</summary><div><code>kb</code> does <strong>bookkeeping</strong> (file, index, log, stamp). The AI does <strong>thinking</strong> (understand, summarize, link, spot contradictions). We split them because the two jobs fail for opposite reasons: bookkeeping fails from human laziness and agent forgetfulness, so it must be <em>deterministic code that never forgets</em>; thinking needs a real mind, so it must be the <em>AI</em>. Put the reliable job in reliable code. Rent the smart job. A <code>kb</code> that tried to be smart would be worse at both.</div></details>
+        <details><summary>2. The playbook. You run kb add mypaper.pdf. One thing kb does; one thing it does NOT do but tells the AI to do. Why can't kb do the second thing?</summary><div><code>kb</code> <strong>does</strong>: copy the file into <code>raw/</code> unchanged, add a log entry, print the playbook. <code>kb</code> does <strong>not</strong> write the summary: it <em>tells the AI</em> to read the paper and write a ≤150-word summary with observations and links. <code>kb</code> can't do that because writing a good summary is <em>thinking</em>, and <code>kb</code> has no AI inside it. That is the whole design, not a missing feature.</div></details>
+        <details><summary>3. Raw vs memories. Why two folders? What rule does the AI follow about raw/</summary><div><code>raw/</code> holds the <strong>originals, immutable</strong>: the source of truth. <code>memories/</code> holds the <strong>AI's derived notes</strong>: the useful, rewritable layer. The rule: <strong>the AI never edits <code>raw/</code>.</strong> If a summary is wrong, you fix the memory, never the source. This means you can always re-derive notes from untouched originals, and a bad AI pass can never corrupt your evidence.</div></details>
+        <details><summary>4. The upgrade. Friend has 200 notes, search feels slow. One command? What happens to existing notes? Who tells them?</summary><div>Command: <strong><code>kb enable search</code></strong>. It installs the Basic Memory engine behind the <strong>same files</strong>: existing notes are <strong>not moved or rewritten</strong>, zero migration. Who tells them: the <strong>Advisor</strong> already suggested it in <code>kb status</code> when the KB crossed a size threshold, with a one-line reason. Pain felt → lesson taught → one command → done.</div></details>
+        <details><summary>5. The bet. Why plain markdown in a git folder instead of a nice app with a database?</summary><div>Concrete benefits: <strong>you own it forever</strong> (no lock-in, no vendor), <strong>git gives free history/undo/branching</strong>, <strong>any tool reads it</strong> (Obsidian, grep, another agent), and <strong>the index can always be rebuilt from the files</strong>: the files are the master, never the database. A pretty app that owns your data can disappear; a folder of markdown can't.</div></details>
+        <details><summary>6. Deep module. The whole CLI is ~13 verbs. Why is a small verb set a feature?</summary><div>Because <strong>leverage</strong>: you learn a few words and get the whole system; all the messy bookkeeping hides behind them. Small interface + lots of hidden behavior = a deep module. A big interface would mean you have to understand the plumbing to use the tool: the opposite of "so simple you never have to think."</div></details>
+      </div>
+    </section>
+
+    <section class="wrap" id="hello" aria-labelledby="hello-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Hello world</p>
+          <h2 id="hello-title">Your first five minutes.</h2>
+        </div>
+        <p class="subtle">The loop is new -> add -> AI writes -> search -> status. In Claude Code, you can just say, "add these three papers to my research KB," and the agent runs the verbs and follows the playbooks.</p>
+      </div>
+      <div class="terminal-card">
+        <div class="code-head">
+          <strong>Copy and run</strong>
+          <button class="copy" id="copyCode" type="button">Copy</button>
+        </div>
+        <pre><code id="helloCode">bunx kb-cli new research          # make a knowledge base
+# creates ~/kb/research/ with the folders above
+
+echo "some paper text" > paper.txt
+kb --kb research add paper.txt    # file it + get a playbook
+# kb copies it to raw/, prints: "now write the summary, save to memories/..."
+# your AI reads the playbook and writes the memory
+
+kb --kb research search "topic"   # ask against your notes
+
+kb --kb research status           # see Arm, counts, and Advisor suggestion</code></pre>
+      </div>
+    </section>
+
+    <section class="wrap" id="honest" aria-labelledby="honest-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">The honest footer</p>
+          <h2 id="honest-title">You own the files.</h2>
+        </div>
+        <p class="subtle">kb is local-first plain markdown. The repo is TylerJNewman/kb. No external service owns the knowledge base.</p>
+      </div>
+      <div class="honest">
+        <div class="fact"><strong>Local-first</strong><br><span class="subtle">Your KB lives on disk.</span></div>
+        <div class="fact"><strong>Plain markdown</strong><br><span class="subtle">Any tool can read it.</span></div>
+        <div class="fact"><strong>Git-native</strong><br><span class="subtle">History and undo come for free.</span></div>
+        <div class="fact"><strong>Obsidian-ready</strong><br><span class="subtle">Open the folder directly.</span></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    <p><span class="repo-text">TylerJNewman/kb</span> as text, not a link: this page has no external resources. Next: a voiced tutorial and a guided first-run.</p>
+  </footer>
+
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var themeButton = document.getElementById("themeToggle");
+      var themes = ["auto", "light", "dark"];
+      var themeIndex = 0;
+
+      function setTheme(name) {
+        if (name === "auto") {
+          root.removeAttribute("data-theme");
+        } else {
+          root.setAttribute("data-theme", name);
+        }
+        themeButton.textContent = "Theme: " + name;
+        themeButton.setAttribute("aria-label", "Switch color theme. Current theme: " + name);
+      }
+
+      themeButton.addEventListener("click", function () {
+        themeIndex = (themeIndex + 1) % themes.length;
+        setTheme(themes[themeIndex]);
+      });
+
+      var grug = document.getElementById("grugVoice");
+      var feynman = document.getElementById("feynmanVoice");
+      var voiceText = document.getElementById("voiceText");
+      var copyButton = document.getElementById("copyCode");
+      var helloCode = document.getElementById("helloCode");
+
+      function setVoice(kind) {
+        var isGrug = kind === "grug";
+        grug.setAttribute("aria-pressed", String(isGrug));
+        feynman.setAttribute("aria-pressed", String(!isGrug));
+        voiceText.textContent = isGrug
+          ? "kb not brain. kb clerk. Clerk put paper in right box, write line on map, make log. AI read and think. This good. Smart thing can be messy; filing thing must never be messy."
+          : "Think of kb as the reliable lab notebook assistant. It does the operations that should never be creative: preserve the source, update the catalog, record what happened, and hand the agent a playbook. The AI then spends its intelligence where intelligence matters: reading, summarizing, connecting, and questioning.";
+      }
+
+      grug.addEventListener("click", function () { setVoice("grug"); });
+      feynman.addEventListener("click", function () { setVoice("feynman"); });
+
+      function fallbackCopy(text) {
+        var area = document.createElement("textarea");
+        area.value = text;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.left = "-9999px";
+        document.body.appendChild(area);
+        area.select();
+        try {
+          document.execCommand("copy");
+          copyButton.textContent = "Copied";
+        } catch (error) {
+          copyButton.textContent = "Select text";
+        }
+        document.body.removeChild(area);
+      }
+
+      copyButton.addEventListener("click", function () {
+        var text = helloCode.textContent;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            copyButton.textContent = "Copied";
+          }, function () {
+            fallbackCopy(text);
+          });
+        } else {
+          fallbackCopy(text);
+        }
+        window.setTimeout(function () { copyButton.textContent = "Copy"; }, 1800);
+      });
+    }());
+  </script>
+</body>
+</html>
