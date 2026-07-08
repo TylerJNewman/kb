@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kb — a visual walkthrough</title>
+<style>
+  :root{
+    --paper:#fffff8; --ink:#111110; --muted:#5b5b52;
+    --rule:#e6e4d6; --accent:#8a3324; --ascii-bg:#f4f2e6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --paper:#111110; --ink:#e8e6da; --muted:#9a978a;
+      --rule:#2a2a26; --accent:#d98b6a; --ascii-bg:#1a1a17;
+    }
+  }
+  *{box-sizing:border-box}
+  html{font-size:15px}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:"Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    line-height:1.55; -webkit-text-size-adjust:100%;
+  }
+  article{
+    max-width:1400px; margin:0 auto; padding:6vh 6vw 14vh;
+  }
+  /* content column ~ 55%, margin reserved on the right for sidenotes */
+  h1,h2,h3,p,ol,ul,.epigraph{width:60%}
+  @media (max-width:1000px){ h1,h2,h3,p,ol,ul,.epigraph{width:100%} }
+
+  h1{
+    font-weight:400; font-size:2.6rem; line-height:1.1;
+    margin:0 0 0.2rem; letter-spacing:-.01em;
+  }
+  .subtitle{font-style:italic; color:var(--muted); font-size:1.2rem; margin:.2rem 0 2.6rem; width:60%}
+  @media (max-width:1000px){ .subtitle{width:100%} }
+  h2{
+    font-weight:400; font-size:1.5rem; margin:3.2rem 0 .3rem; font-style:italic;
+  }
+  h2 .num{ font-style:normal; color:var(--muted); font-size:1rem; margin-right:.5ch; }
+  h3{font-weight:400; font-style:italic; font-size:1.15rem; color:var(--muted); margin:1.6rem 0 .2rem}
+  p{margin:.9rem 0}
+  a{color:var(--accent); text-underline-offset:2px}
+  strong{font-weight:700}
+  code{font-family:"SF Mono",SFMono-Regular,Menlo,Consolas,monospace; font-size:.85em; background:var(--ascii-bg); padding:.05em .35em; border-radius:3px}
+
+  .epigraph{
+    border-left:2px solid var(--accent); padding:.2rem 0 .2rem 1.1rem;
+    font-style:italic; color:var(--ink); margin:1.4rem 0;
+  }
+
+  /* Sidenotes: sit in the right margin on wide screens, inline on narrow */
+  .sn{
+    float:right; clear:right;
+    width:34%; margin-right:-40%;
+    font-size:.82rem; line-height:1.4; color:var(--muted);
+    font-style:normal; position:relative; padding-left:1rem;
+  }
+  .sn::before{content:"›"; position:absolute; left:0; top:0; color:var(--accent)}
+  @media (max-width:1000px){
+    .sn{ float:none; width:100%; margin:.4rem 0 .9rem; border-left:2px solid var(--rule); }
+    .sn::before{content:none}
+  }
+
+  /* ASCII figures: full-bleed of the content column, monospace, scroll on small */
+  figure{margin:1.6rem 0; width:100%}
+  pre{
+    font-family:"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    background:var(--ascii-bg); color:var(--ink);
+    font-size:.8rem; line-height:1.35; letter-spacing:0;
+    padding:1.1rem 1.2rem; border-radius:6px; border:1px solid var(--rule);
+    overflow-x:auto; -webkit-overflow-scrolling:touch;
+    tab-size:2;
+  }
+  pre.console b{color:var(--accent); font-weight:700}      /* prompt $ */
+  pre.console i{color:var(--muted); font-style:normal}      /* comments */
+  figcaption{font-size:.82rem; color:var(--muted); font-style:italic; margin-top:.5rem}
+
+  hr{border:0; border-top:1px solid var(--rule); margin:3rem 0; width:100%}
+  footer{margin-top:4rem; color:var(--muted); font-size:.85rem; width:60%}
+  @media (max-width:1000px){ footer{width:100%} }
+  footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+<article>
+
+  <h1>kb</h1>
+  <p class="subtitle">A filing clerk that lives in your terminal. Your AI thinks; kb does the paperwork.</p>
+
+  <p>A knowledge base needs two different jobs done. <strong>Thinking</strong> — read a paper, understand it, write a good summary, notice where it disagrees with another. And <strong>bookkeeping</strong> — copy the file to the right place, update the index, stamp the log, never lose anything.<span class="sn">People abandon knowledge bases because the bookkeeping grows faster than the value. The AI is the opposite: brilliant at thinking, forgetful at bookkeeping across sessions.</span></p>
+
+  <p class="epigraph">kb does all the bookkeeping. The AI does all the thinking. Neither does the other's job.</p>
+
+  <h2><span class="num">I.</span>The split</h2>
+
+  <p>The surprising part: <strong>kb has no AI inside it.</strong> When you run <code>kb add paper.pdf</code>, it does its deterministic half, then <em>prints a playbook</em> — precise instructions for the agent's half.<span class="sn">This is why kb works with any agent and installs nothing heavy. The CLI is small, dumb, reliable. The intelligence is rented from whatever agent drives it.</span></p>
+
+  <figure>
+<pre>                YOU  (talking to your AI agent)
+                          │
+                          ▼
+        ┌─────────────────────────────────────┐
+        │            kb   (the CLI)            │   no AI inside.
+        │   ───────────────────────────────   │   just reliable
+        │   • copy file into  raw/            │   bookkeeping.
+        │   • add one line to index.md        │
+        │   • stamp   log.md                  │
+        │   • then PRINT a playbook ──────────┼───┐
+        └─────────────────────────────────────┘   │
+                                                   │  "now read raw/paper.txt,
+                                                   │   write a ≤150-word summary,
+                                                   ▼   save to memories/…"
+        ┌─────────────────────────────────────┐
+        │           your AI agent             │   the thinking.
+        │   reads the playbook, understands   │   reads, summarizes,
+        │   the paper, writes the memory      │   links, questions.
+        └─────────────────────────────────────┘</pre>
+    <figcaption>The playbook is the seam between deterministic code and rented intelligence.</figcaption>
+  </figure>
+
+  <h2><span class="num">II.</span>What lands on disk</h2>
+
+  <p>One command gives you a folder of plain markdown you own.<span class="sn">All plain text. Opens in Obsidian. Lives in git. Delete kb tomorrow and you still have everything.</span></p>
+
+  <figure>
+<pre>~/kb/research/
+├── raw/          originals, NEVER edited        (the vault)
+├── memories/     AI-written summaries           (the useful notes)
+├── index.md      one line per memory            (the cheap map)
+├── log.md        what you did + when            (the history)
+└── kb.yaml       settings (arm, engine)</pre>
+  </figure>
+
+  <p>Two folders, one rule: the agent <strong>never edits <code>raw/</code></strong>. If a summary is wrong you fix the memory, never the source — so a bad pass can never corrupt your evidence.</p>
+
+  <h2><span class="num">III.</span>The hello-world pipeline</h2>
+
+  <figure>
+<pre>  kb new  ───▶  kb add  ───▶  (AI writes)  ───▶  kb status / kb search
+  ────────      ────────      ───────────       ─────────────────────
+  make a KB     file a        memory saved      see state + Advisor tip
+  ~/kb/research raw source     to memories/      / ask your notes
+                + playbook</pre>
+  </figure>
+
+  <h2><span class="num">IV.</span>A toy run</h2>
+
+  <p>Copy, paste, watch. The arrow marks the one step the agent does, not kb.</p>
+
+  <figure>
+<pre class="console"><b>$</b> npm i -g @tylerjnewman/kb        <i># one-time install</i>
+
+<b>$</b> kb new research
+Created KB: research
+Path: ~/kb/research
+Default: research
+Next: kb add &lt;file-or-url&gt;
+
+<b>$</b> echo "Vector search beats keyword for fuzzy recall." &gt; paper.txt
+<b>$</b> kb add paper.txt
+Add playbook
+Raw source: raw/paper-9c1f.txt          <i># original, filed untouched</i>
+Memory target: memories/paper.md
+Agent half:
+  1. Read raw/paper-9c1f.txt.
+  2. Write a summary; save to memories/paper.md.
+  3. Run: kb index update
+        │
+        ▼   <i>(your AI now writes memories/paper.md — the thinking half)</i>
+
+<b>$</b> kb status
+KB: research
+Arm: b0 (plain markdown)                 <i># engineless, zero deps</i>
+Search: plain files
+Sources: 1   Memories: 1   Index entries: 1
+Advisor:
+- No suggestions.                        <i># too small to need search yet</i></pre>
+  </figure>
+
+  <h2><span class="num">V.</span>The "grow later" moment</h2>
+
+  <p>You start with nothing but files. Search is just reading the index — fine when small. When it stops being fine, kb notices and tells you why.<span class="sn">The Advisor suggests; it never acts. You stay in control. You upgrade only when you feel the pain — and learn the reason at the exact moment it matters.</span></p>
+
+  <figure>
+<pre>   small KB                                    bigger KB
+   ────────                                    ─────────
+   kb search reads index.md            the Advisor notices:
+   (plain files, instant)      ──▶     "87 notes — run kb enable search"
+                                                │
+                                                ▼
+                              $ kb enable search
+                              Search enabled for research.
+                              Arm: b1. Existing files unchanged.   ← SAME files
+                                                │
+                                                ▼
+                              kb search now uses a real engine
+                              (Basic Memory) over the same markdown</pre>
+    <figcaption>Upgrade is an engine swap behind the same files. Nothing moves. Nothing is rewritten.</figcaption>
+  </figure>
+
+  <h2><span class="num">VI.</span>The whole verb set</h2>
+
+  <p>Small on purpose. You learn a handful of words; the messy bookkeeping hides behind them. That is the deep-module bargain: tiny interface, lots of behavior.</p>
+
+  <figure>
+<pre>  LEARN     kb start                      print a walkthrough (no changes)
+  CREATE    kb new &lt;name&gt;                 make a KB (first = default)
+            kb init                       scaffold in the current folder
+  ADD       kb add &lt;file|url&gt;             file a raw source + playbook
+            kb draft "&lt;title&gt;"            blank memory for the agent to fill
+  ASK       kb search "&lt;query&gt;"           ask your notes
+            kb status                     state + Advisor's next tip
+            kb read &lt;memory&gt;              open one memory
+            kb list                       all your KBs
+  GROW      kb enable search              turn on the real engine (b0→b1)
+  TIDY      kb reflect                    plan: consolidate recent memories
+            kb check                      plan: structural issues to fix</pre>
+  </figure>
+
+  <p>You rarely name a KB, because targeting resolves itself:<span class="sn">The first KB you create becomes your default, so the common one-KB case needs no flag at all.</span></p>
+
+  <figure>
+<pre>  which KB?   1.  --in &lt;name&gt;   (explicit)
+              2.  the KB you're cd'd inside
+              3.  your default KB          ← covers the normal case</pre>
+  </figure>
+
+  <h2><span class="num">VII.</span>You don't type any of this</h2>
+
+  <p>In Claude Code you speak, and the agent runs the verbs and follows the playbooks:</p>
+
+  <p class="epigraph">"Add these three papers to my research KB and tell me what they agree on."</p>
+
+  <p>The agent runs <code>kb add</code> three times, follows each printed playbook to write the memories, then <code>kb search</code> to answer — and you watch it happen.</p>
+
+  <hr>
+  <footer>
+    <p>kb is local-first plain markdown. Source: <a href="https://github.com/TylerJNewman/kb">TylerJNewman/kb</a>. This page has no external resources.</p>
+  </footer>
+
+</article>
+</body>
+</html>
