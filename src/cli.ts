@@ -5,7 +5,7 @@ import { basename, dirname, extname, join, parse, resolve } from "node:path";
 import { BasicMemoryAdapter } from "./engine/basic-memory";
 import { FORMAT_VERSION, INDEX_LINE_FORMAT, indexLine, memoryFormatPlaybookLines, memoryTemplate } from "./memory-format";
 
-export const VERSION = "0.0.0";
+export const VERSION = "0.1.0";
 
 const EXIT_USAGE = 64;
 const EXIT_UNAVAILABLE = 69;

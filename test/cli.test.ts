@@ -36,7 +36,7 @@ test("kb --version exits 0 and writes only the version to stdout", async () => {
 
   expect(result).toEqual({
     code: 0,
-    stdout: "kb 0.0.0\n",
+    stdout: "kb 0.1.0\n",
     stderr: "",
   });
 });
@@ -46,7 +46,7 @@ test("global --kb flag is accepted before a command is routed", async () => {
 
   expect(result).toEqual({
     code: 0,
-    stdout: "kb 0.0.0\n",
+    stdout: "kb 0.1.0\n",
     stderr: "",
   });
 });

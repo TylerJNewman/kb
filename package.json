@@ -1,10 +1,29 @@
 {
   "name": "kb-cli",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Agent-first CLI for local markdown knowledge bases.",
+  "keywords": [
+    "knowledge-base",
+    "markdown",
+    "cli",
+    "agent",
+    "basic-memory"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TylerJNewman/kb.git"
+  },
+  "homepage": "https://github.com/TylerJNewman/kb#readme",
   "type": "module",
+  "engines": {
+    "bun": ">=1.1.0"
+  },
   "files": [
-    "bin",
-    "src"
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
   ],
   "bin": {
     "kb": "./bin/kb",
