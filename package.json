@@ -1,5 +1,5 @@
 {
-  "name": "kb-cli",
+  "name": "@tylerjnewman/kb",
   "version": "0.1.0",
   "description": "Agent-first CLI for local markdown knowledge bases.",
   "keywords": [
@@ -26,8 +26,7 @@
     "LICENSE"
   ],
   "bin": {
-    "kb": "./bin/kb",
-    "kb-cli": "./bin/kb"
+    "kb": "bin/kb"
   },
   "scripts": {
     "test": "bun test"

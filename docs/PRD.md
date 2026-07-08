@@ -83,7 +83,7 @@ A single CLI, `kb`, that an AI agent drives on the user's behalf. One command sc
 
 ## Implementation Decisions
 
-**Overall shape.** A TypeScript CLI running on Bun, published to npm as `kb-cli` with binary `kb`, runnable via `bunx`/`npx kb-cli` with zero install (ADR-0004). No interactive prompts; every decision is a flag with a default; education ships as printed `--help`/`--guide`/playbook text (ADR-0002).
+**Overall shape.** A TypeScript CLI running on Bun, published to npm as `@tylerjnewman/kb` with binary `kb`, runnable via `bunx`/`npx @tylerjnewman/kb` with zero install (ADR-0004). No interactive prompts; every decision is a flag with a default; education ships as printed `--help`/`--guide`/playbook text (ADR-0002).
 
 **Engine relationship.** Basic Memory is wrapped as a separate, out-of-process engine, never forked, installed lazily via `uvx basic-memory` only when a B-Arm needs it. The CLI talks to it via `bm tool <cmd> --json` (and, later, its MCP server). The npm package carries no Python (ADR-0001).
 
@@ -126,7 +126,7 @@ Deferred, recorded in ADR-0005: B2 cron scheduling; an MCP server for any-agent 
 
 ## Further Notes
 
-- **Acceptance test for v1 (ADR-0005):** a fresh Claude Code user runs `bunx kb-cli new research`, adds three papers, asks one question, and is told by the Advisor what to do next — in under five minutes, with nothing installed but the npm package.
+- **Acceptance test for v1 (ADR-0005):** a fresh Claude Code user runs `bunx @tylerjnewman/kb new research`, adds three papers, asks one question, and is told by the Advisor what to do next — in under five minutes, with nothing installed but the npm package.
 - **Riskiest item:** `kb enable search` (Python/uv presence, Basic Memory version drift). It's deliberately in v1 to validate the wrapping architecture before more is built on it.
 - **Design inspirations carried forward** (from the Karpathy LLM-Wiki gist and the Iusztin/Bouchard "10,994 notes" transcript): the cheap index entry point, per-source executive summaries written once at ingest, tiered read with early-exit, the question log, and depth presets. Their explicitly-unsolved problems (provenance/freshness ranking, compaction, linting, evaluation) map onto our deferred modules.
 - **Educational stance:** the product deliberately teaches — good defaults so the user rarely reasons, feed-forward suggestions at the moment a lesson is felt, and progressive complexity (start engineless, upgrade when pain is named).

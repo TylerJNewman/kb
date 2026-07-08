@@ -99,10 +99,10 @@ Try to answer in your own words first, then check.
 
 ## Hello world — your first five minutes
 
-Once published (`kb-cli` on npm), the whole first session:
+Once published (`@tylerjnewman/kb` on npm), the whole first session:
 
 ```bash
-bunx kb-cli new research          # make a knowledge base
+bunx @tylerjnewman/kb new research          # make a knowledge base
 # → creates ~/kb/research/ with the folders above
 
 echo "some paper text" > paper.txt
