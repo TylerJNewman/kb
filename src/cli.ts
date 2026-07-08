@@ -461,7 +461,14 @@ async function searchKb(kbName: string | null, args: string[]): Promise<number> 
     return EXIT_USAGE;
   }
 
-  const results = await searchFiles(target.path, query);
+  const config = await readKbConfig(target.path);
+  const results = config.engineState === "enabled"
+    ? await searchEngine(target, config, query)
+    : await searchFiles(target.path, query);
+  if (results === null) {
+    return EXIT_UNAVAILABLE;
+  }
+
   await appendLogEntry(target.path, "query", query);
 
   process.stdout.write(renderSearchResults(target.name, query, results));
@@ -824,6 +831,76 @@ type SearchResult = {
   match: string;
   score: number;
 };
+
+type BasicMemorySearchResult = {
+  title?: unknown;
+  score?: unknown;
+  file_path?: unknown;
+  matched_chunk?: unknown;
+  content?: unknown;
+};
+
+type BasicMemorySearchResponse = {
+  results?: unknown;
+  error?: unknown;
+};
+
+async function searchEngine(
+  target: { name: string; path: string },
+  config: KbConfig,
+  query: string,
+): Promise<SearchResult[] | null> {
+  const project = config.engineProject ?? target.name;
+  const run = await runExternal("bm", ["tool", "search-notes", query, "--project", project], target.path);
+  if (run.code !== 0) {
+    writeError(`search engine failed; engineless fallback was not used. ${firstOutputLine(run)}`);
+    return null;
+  }
+
+  let parsed: BasicMemorySearchResponse;
+  try {
+    parsed = JSON.parse(run.stdout) as BasicMemorySearchResponse;
+  } catch {
+    writeError("search engine failed; engineless fallback was not used. Basic Memory returned non-JSON output.");
+    return null;
+  }
+
+  if (parsed.error !== undefined) {
+    writeError(`search engine failed; engineless fallback was not used. ${String(parsed.error)}`);
+    return null;
+  }
+  if (!Array.isArray(parsed.results)) {
+    writeError("search engine failed; engineless fallback was not used. Basic Memory JSON did not include results.");
+    return null;
+  }
+
+  return parsed.results.map((result) => normalizeBasicMemoryResult(result)).filter((result): result is SearchResult => result !== null);
+}
+
+function normalizeBasicMemoryResult(value: unknown): SearchResult | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const result = value as BasicMemorySearchResult;
+  if (typeof result.file_path !== "string" || result.file_path.length === 0) {
+    return null;
+  }
+
+  const title = typeof result.title === "string" && result.title.length > 0
+    ? result.title.replace(/^summary:\s*/i, "").replace(/\.\.\.$/, "")
+    : titleFromSlug(basename(result.file_path, ".md"));
+  const match = typeof result.matched_chunk === "string" && result.matched_chunk.length > 0
+    ? result.matched_chunk
+    : typeof result.content === "string" ? result.content : "";
+
+  return {
+    ref: result.file_path,
+    title,
+    source: "memory",
+    match,
+    score: typeof result.score === "number" ? result.score : 0,
+  };
+}
 
 async function searchFiles(kbPath: string, query: string): Promise<SearchResult[]> {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);

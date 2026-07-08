@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
 let harness: KbHarness;
@@ -436,6 +436,104 @@ Results: 1
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("query | retrieval");
 });
 
+test("kb search uses Basic Memory when the Engine is enabled and keeps the normalized output contract", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  await harness.writeFakeExecutable(
+    "bm",
+    `#!/bin/sh
+printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "tool" ] && [ "$2" = "search-notes" ]; then
+  /bin/cat '${fixturePath("search-entity.json")}'
+  exit 0
+fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["search", "durable observation", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: `Search results
+KB: research
+Query: durable observation
+Results: 1
+
+1. memories/example-memory.md | Example Memory
+   Source: memory
+   Match: - [summary] One durable observation. #research
+- relates_to [[Target Memory]]
+`,
+    stderr: "",
+  });
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(
+    "bm tool search-notes durable observation --project research\n",
+  );
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("query | durable observation");
+});
+
+test("kb search output shape stays stable between engineless and Engine paths", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "memories", "example-memory.md"), `---
+title: Example Memory
+type: note
+tags:
+  - research
+permalink: example-memory
+---
+
+- [summary] One durable observation. #research
+`);
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
+`);
+  const engineless = await harness.runKb(["search", "durable observation", "--kb", "research"]);
+
+  await enableSearchInConfig(kbDir);
+  await harness.writeFakeExecutable(
+    "bm",
+    `#!/bin/sh
+if [ "$1" = "--version" ]; then exit 0; fi
+/bin/cat '${fixturePath("search-entity.json")}'
+`,
+  );
+  const engine = await harness.runKb(["search", "durable observation", "--kb", "research"]);
+
+  expect(engineless.code).toBe(0);
+  expect(engine.code).toBe(0);
+  expect(searchShape(engine.stdout)).toEqual(searchShape(engineless.stdout));
+});
+
+test("kb search reports Engine failure explicitly and does not fall back silently", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
+- [[memories/alpha.md|Alpha Memory]] | category: research | summary: This would match fallback.
+`);
+  await harness.writeFakeExecutable(
+    "bm",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\necho 'missing project' >&2\nexit 1\n",
+  );
+
+  const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: search engine failed; engineless fallback was not used. missing project\n",
+  });
+});
+
 test("kb status prints counts, health, and an empty Advisor slot for fixture state", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
@@ -801,6 +899,43 @@ test("Advisor suggests reflect only after the threshold elapses", async () => {
 async function scaffoldResearchKb(): Promise<void> {
   await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
   await harness.runKb(["new", "research"]);
+}
+
+async function enableSearchInConfig(kbDir: string): Promise<void> {
+  await writeFile(join(kbDir, "kb.yaml"), `schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b1
+engine:
+  basicMemory:
+    state: enabled
+    project: research
+lastReflectAt: null
+`);
+}
+
+function fixturePath(name: string): string {
+  return resolve(import.meta.dir, "fixtures", "basic-memory-contract", name);
+}
+
+function searchShape(stdout: string): string[] {
+  return stdout
+    .split("\n")
+    .filter((line) =>
+      line === "Search results"
+      || line.startsWith("KB: ")
+      || line.startsWith("Query: ")
+      || line.startsWith("Results: ")
+      || /^\d+\. memories\/.+ \| .+$/.test(line)
+      || line.startsWith("   Source: ")
+      || line.startsWith("   Match: ")
+    )
+    .map((line) =>
+      line
+        .replace(/^KB: .+$/, "KB: <kb>")
+        .replace(/^Query: .+$/, "Query: <query>")
+        .replace(/^Results: \d+$/, "Results: <n>")
+        .replace(/^   Match: .+$/, "   Match: <match>")
+    );
 }
 
 async function writeMemory(kbDir: string, file: string, title: string, permalink: string, extraFrontmatter = ""): Promise<void> {
