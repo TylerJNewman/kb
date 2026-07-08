@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "1password": {
+      "source": "steipete/clawdis",
+      "sourceType": "github",
+      "skillPath": "skills/1password/SKILL.md",
+      "computedHash": "1d6700428223721025b199202a18eced5eb77a85e7f2ebfadafd192b3da959d3"
+    },
     "ask-matt": {
       "source": "mattpocock/skills",
       "sourceType": "github",

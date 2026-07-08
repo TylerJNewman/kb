@@ -102,21 +102,21 @@ Try to answer in your own words first, then check.
 Once published (`@tylerjnewman/kb` on npm), the whole first session:
 
 ```bash
-bunx @tylerjnewman/kb new research          # make a knowledge base
-# → creates ~/kb/research/ with the folders above
+bunx @tylerjnewman/kb new research   # make a knowledge base
+# → creates ~/kb/research/ and makes it your default KB
 
 echo "some paper text" > paper.txt
-kb --kb research add paper.txt    # file it + get a playbook
+kb add paper.txt      # file it + get a playbook
 # → kb copies it to raw/, prints: "now write the summary, save to memories/…"
 # → your AI reads the playbook and writes the memory
 
-kb --kb research status           # see where you stand
-# → Arm, counts, and the Advisor's next suggestion
-
-kb --kb research search "topic"   # ask against your notes
+kb status             # see where you stand — Arm, counts, Advisor's next tip
+kb search "topic"     # ask against your notes
 ```
 
 That is it: **new → add → (AI writes) → search → status.** No database, no signup, no config.
+
+**Why no `--kb` flag here?** Your first KB becomes the *default*, so plain `kb add` / `kb status` act on it. You only need `--kb <name>` once you have **several** KBs and want to target a specific one (or `cd` into its folder — being inside a KB targets it automatically).
 
 In Claude Code you do not even type these. You say *"add these three papers to my research KB"* and the agent runs the verbs and follows the playbooks for you.
 

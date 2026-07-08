@@ -514,7 +514,7 @@
           <pre><code>$ bunx @tylerjnewman/kb new research
 creates ~/kb/research/
 
-$ kb --kb research add paper.txt
+$ kb add paper.txt
 copies source to raw/
 prints the playbook
 
@@ -627,13 +627,16 @@ writes memory to memories/</code></pre>
 # creates ~/kb/research/ with the folders above
 
 echo "some paper text" > paper.txt
-kb --kb research add paper.txt    # file it + get a playbook
+kb add paper.txt    # file it + get a playbook
 # kb copies it to raw/, prints: "now write the summary, save to memories/..."
 # your AI reads the playbook and writes the memory
 
-kb --kb research search "topic"   # ask against your notes
+kb search "topic"   # ask against your notes
 
-kb --kb research status           # see Arm, counts, and Advisor suggestion</code></pre>
+# Your first KB is the default, so no --kb needed.
+# Have several? Target one with --kb &lt;name&gt;, or cd into its folder.
+
+kb status           # see Arm, counts, and Advisor suggestion</code></pre>
       </div>
     </section>
 
