@@ -1002,6 +1002,71 @@ lastReflectAt: null
   expect(result).toEqual({ code: 0, stdout: "Search already enabled for research.\n", stderr: "" });
 });
 
+test("commands reject malformed KB configuration before doing work", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const before = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await writeFile(join(kbDir, "kb.yaml"), before.replace("schemaVersion: 1", "schemaVersion: 2"));
+
+  const result = await harness.runKb(["status", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid kb.yaml: unsupported schemaVersion: 2\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(before.replace("schemaVersion: 1", "schemaVersion: 2"));
+});
+
+test("contradictory Engine state is rejected instead of defaulting to unknown", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "kb.yaml"), `schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b1
+engine:
+  basicMemory:
+    state: disabled
+    project: null
+lastReflectAt: null
+`);
+
+  const result = await harness.runKb(["search", "anything", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid kb.yaml: unsupported state combination: arm b1 requires enabled Engine with a project\n",
+  });
+});
+
+test("invalid reflect timestamps fail before mutation", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const malformed = `schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b0
+engine:
+  basicMemory:
+    state: disabled
+    project: null
+lastReflectAt: someday
+`;
+  await writeFile(join(kbDir, "kb.yaml"), malformed);
+
+  const result = await harness.run("kb", ["reflect", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+  });
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid kb.yaml: invalid lastReflectAt: someday\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(malformed);
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).not.toContain("reflect");
+});
+
 test("kb enable search fails clearly without uvx and leaves the KB in B0", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
@@ -1067,6 +1132,52 @@ test("kb enable search reports reindex failure and leaves the KB in B0", async (
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+});
+
+test("configuration replacement failure leaves prior config parseable and removes temp files", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeEngineStubs();
+  const before = await readFile(join(kbDir, "kb.yaml"), "utf8");
+
+  const result = await harness.run("kb", ["enable", "search", "--kb", "research"], {
+    env: { KB_FAIL_CONFIG_COMMIT: "before-rename" },
+  });
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: config commit failed before atomic replacement\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(before);
+  expect((await readdir(kbDir)).filter((entry) => entry.startsWith(".kb.yaml."))).toEqual([]);
+  expect((await harness.runKb(["status", "--kb", "research"])).code).toBe(0);
+});
+
+test("concurrent reflect metadata and Engine transition preserve both updates", async () => {
+  await scaffoldResearchKb();
+  await writeMemory(join(harness.home, "kb", "research"), "concurrent.md", "Concurrent Memory", "concurrent");
+  await writeSlowEngineStubs();
+  const kbDir = join(harness.home, "kb", "research");
+
+  const [enabled, reflected] = await Promise.all([
+    harness.runKb(["enable", "search", "--kb", "research"]),
+    harness.run("kb", ["reflect", "--kb", "research"], {
+      env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+    }),
+  ]);
+
+  expect(enabled.code).toBe(0);
+  expect(reflected.code).toBe(0);
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(`schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b1
+engine:
+  basicMemory:
+    state: enabled
+    project: research
+lastReflectAt: 2026-07-07T12:00:00.000Z
+`);
 });
 
 test("engineless loop new add draft search read status works with no Engine installed", async () => {
@@ -1345,6 +1456,20 @@ engine:
     project: research
 lastReflectAt: null
 `);
+}
+
+async function writeEngineStubs(): Promise<void> {
+  await harness.writeFakeExecutable(
+    "bm",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then exit 0; fi\nexit 2\n",
+  );
+}
+
+async function writeSlowEngineStubs(): Promise<void> {
+  await harness.writeFakeExecutable(
+    "bm",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ]; then /bin/sleep 0.2; exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then /bin/sleep 0.2; exit 0; fi\nexit 2\n",
+  );
 }
 
 function fixturePath(name: string): string {

@@ -3,7 +3,8 @@ import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/p
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, parse, resolve } from "node:path";
 import { BasicMemoryAdapter } from "./engine/basic-memory";
-import { FORMAT_VERSION, INDEX_LINE_FORMAT, indexLine, memoryFormatPlaybookLines, memoryTemplate } from "./memory-format";
+import { KbConfigCommitError, KbConfigError, readKbConfig, serializeKbConfig, updateKbConfig, type KbConfig } from "./kb-config";
+import { INDEX_LINE_FORMAT, indexLine, memoryFormatPlaybookLines, memoryTemplate } from "./memory-format";
 
 export const VERSION = "0.1.0";
 
@@ -49,6 +50,22 @@ type ParseResult =
   | { ok: false; message: string };
 
 export async function main(argv: string[]): Promise<number> {
+  try {
+    return await mainUnchecked(argv);
+  } catch (error) {
+    if (error instanceof KbConfigError) {
+      writeError(`invalid kb.yaml: ${error.message}`);
+      return EXIT_USAGE;
+    }
+    if (error instanceof KbConfigCommitError) {
+      writeError(error.message);
+      return EXIT_UNAVAILABLE;
+    }
+    throw error;
+  }
+}
+
+async function mainUnchecked(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv);
 
   if (!parsed.ok) {
@@ -769,7 +786,15 @@ async function enableKb(kbName: string | null, args: string[]): Promise<number> 
     return EXIT_UNAVAILABLE;
   }
 
-  await writeKbConfig(target.path, { ...config, ...enabled.value });
+  try {
+    await updateKbConfig(target.path, (current) => ({ ...current, ...enabled.value }));
+  } catch (error) {
+    if (error instanceof KbConfigCommitError) {
+      writeError(`cannot enable search: ${error.message}`);
+      return EXIT_UNAVAILABLE;
+    }
+    throw error;
+  }
   process.stdout.write(`Search enabled for ${target.name}. Arm: b1. Existing files unchanged.\n`);
   return 0;
 }
@@ -937,7 +962,7 @@ async function reflectKb(kbName: string | null, args: string[]): Promise<number>
   const config = await readKbConfig(target.path);
   const changed = await changedMemoriesSince(target.path, config.lastReflectAt);
   const now = nowInstant();
-  await writeLastReflectAt(target.path, now);
+  await updateKbConfig(target.path, (current) => ({ ...current, lastReflectAt: now }));
   await appendLogEntry(target.path, "reflect", `${changed.length} memories`);
   process.stdout.write(reflectPlaybook(changed));
   return 0;
@@ -967,15 +992,7 @@ function isSafeKbName(name: string): boolean {
 }
 
 function kbYaml(arm = "b0"): string {
-  return `schemaVersion: 1
-formatVersion: ${FORMAT_VERSION}
-arm: ${arm}
-engine:
-  basicMemory:
-    state: disabled
-    project: null
-lastReflectAt: null
-`;
+  return serializeKbConfig({ arm: arm as "wiki" | "b0", engineState: "disabled", engineProject: null, lastReflectAt: null });
 }
 
 function agentsMd(): string {
@@ -1062,37 +1079,6 @@ async function writeRawIfMissing(kbPath: string, rawFile: string, content: strin
 
 async function appendLogEntry(kbPath: string, verb: string, title: string): Promise<void> {
   await appendFile(join(kbPath, "log.md"), `## [${todayIso()}] ${verb} | ${title}\n`);
-}
-
-type KbConfig = {
-  arm: string;
-  engineState: string;
-  lastReflectAt: string | null;
-  engineProject: string | null;
-};
-
-async function readKbConfig(kbPath: string): Promise<KbConfig> {
-  const text = await readFile(join(kbPath, "kb.yaml"), "utf8");
-  const lastReflectAt = readYamlScalar(text, "lastReflectAt");
-  const project = readYamlScalar(text, "project");
-  return {
-    arm: readYamlScalar(text, "arm") ?? "unknown",
-    engineState: readYamlScalar(text, "state") ?? "unknown",
-    lastReflectAt: lastReflectAt === null || lastReflectAt === "null" ? null : lastReflectAt,
-    engineProject: project === "null" ? null : project,
-  };
-}
-
-async function writeKbConfig(kbPath: string, config: KbConfig): Promise<void> {
-  await writeFile(join(kbPath, "kb.yaml"), `schemaVersion: 1
-formatVersion: basic-memory-note-v1
-arm: ${config.arm}
-engine:
-  basicMemory:
-    state: ${config.engineState}
-    project: ${config.engineProject ?? "null"}
-lastReflectAt: ${config.lastReflectAt ?? "null"}
-`);
 }
 
 function readYamlScalar(text: string, key: string): string | null {
@@ -1310,15 +1296,6 @@ async function listMemories(kbPath: string): Promise<MemoryInfo[]> {
 async function changedMemoriesSince(kbPath: string, lastReflectAt: string | null): Promise<MemoryInfo[]> {
   const cutoff = lastReflectAt === null ? -Infinity : Date.parse(lastReflectAt);
   return (await listMemories(kbPath)).filter((memory) => memory.mtimeMs > cutoff);
-}
-
-async function writeLastReflectAt(kbPath: string, value: string): Promise<void> {
-  const path = join(kbPath, "kb.yaml");
-  const text = await readFile(path, "utf8");
-  const next = /^lastReflectAt: .+$/m.test(text)
-    ? text.replace(/^lastReflectAt: .+$/m, `lastReflectAt: ${value}`)
-    : `${text.trimEnd()}\nlastReflectAt: ${value}\n`;
-  await writeFile(path, next);
 }
 
 function reflectPlaybook(changed: MemoryInfo[]): string {
