@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, uti
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { INDEX_LINE_FORMAT, indexLine } from "../src/memory-format";
+import { basicMemoryUvxScript, homeResearchProjectListResponseShell, projectListJson, projectListResponseShell, projectListSequenceShell, recordingBasicMemoryUvxScript } from "./helpers/basic-memory-fake";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
 let harness: KbHarness;
@@ -1067,29 +1068,15 @@ test("kb enable search runs availability, project add, and reindex through one p
   await scaffoldResearchKb();
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
-  shift 3
+    recordingBasicMemoryUvxScript(`
   if [ "$1" = "--version" ]; then
   echo "Basic Memory version: 0.22.1"
   exit 0
   fi
-  if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
-  count_file="$HOME/project-list-count"
-  count=0
-  if [ -f "$count_file" ]; then count=$(/bin/cat "$count_file"); fi
-  count=$((count + 1))
-  printf '%s' "$count" > "$count_file"
-  if [ "$count" = "1" ]; then
-    echo '{"projects":[]}'
-  else
-    /bin/cat <<'JSON'
-{"projects":[{"name":"research","local_path":"${join(harness.home, "kb", "research")}"}]}
-JSON
-  fi
-  exit 0
-  fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: join(harness.home, "kb", "research") }]),
+])}
   if [ "$1" = "project" ] && [ "$2" = "add" ]; then
   echo "Project '$3' added successfully"
   exit 0
@@ -1099,13 +1086,7 @@ JSON
   exit 0
   fi
   exit 2
-fi
-if [ "$1" = "--version" ]; then
-  echo "uvx 0.0.0"
-  exit 0
-fi
-exit 2
-`,
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1171,29 +1152,14 @@ ${indexLine("memories/gamma-memory.md", "Gamma Memory", "research", "sharedterm 
 
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
-  shift 3
-fi
+    recordingBasicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then
   exit 0
 fi
-if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
-  count_file="$HOME/project-list-count"
-  count=0
-  if [ -f "$count_file" ]; then count=$(/bin/cat "$count_file"); fi
-  count=$((count + 1))
-  printf '%s' "$count" > "$count_file"
-  if [ "$count" = "1" ]; then
-    echo '{"projects":[]}'
-  else
-    /bin/cat <<'JSON'
-{"projects":[{"name":"research","local_path":"${kbDir}"}]}
-JSON
-  fi
-  exit 0
-fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: kbDir }]),
+])}
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then
   echo "Project '$3' added successfully"
   exit 0
@@ -1213,7 +1179,7 @@ JSON
   exit 0
 fi
 exit 2
-`,
+`),
   );
 
   const enabled = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1412,21 +1378,13 @@ test("kb enable search reports reindex failure and leaves the KB in B0", async (
   const kbDir = join(harness.home, "kb", "research");
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+    recordingBasicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
-if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
-  /bin/cat <<'JSON'
-{"projects":[{"name":"research","local_path":"${kbDir}"}]}
-JSON
-  exit 0
-fi
+${projectListResponseShell(projectListJson([{ name: "research", localPath: kbDir }]))}
 if [ "$1" = "project" ]; then exit 0; fi
 echo 'reindex failed' >&2
 exit 1
-`,
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1445,24 +1403,16 @@ test("kb enable search resumes when the Basic Memory project already points at t
   const kbDir = join(harness.home, "kb", "research");
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+    recordingBasicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
-if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
-  /bin/cat <<'JSON'
-{"projects":[{"name":"research","local_path":"${kbDir}"}]}
-JSON
-  exit 0
-fi
+${projectListResponseShell(projectListJson([{ name: "research", localPath: kbDir }]))}
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then
   echo "unexpected project add" >&2
   exit 9
 fi
 if [ "$1" = "reindex" ]; then exit 0; fi
 exit 2
-`,
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1482,21 +1432,13 @@ test("kb enable search rejects a same-name Basic Memory project at another path"
   const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+    recordingBasicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
-if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
-  /bin/cat <<'JSON'
-{"projects":[{"name":"research","local_path":"/tmp/other-research"}]}
-JSON
-  exit 0
-fi
+${projectListResponseShell(projectListJson([{ name: "research", localPath: "/tmp/other-research" }]))}
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
 if [ "$1" = "reindex" ]; then exit 9; fi
 exit 2
-`,
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1522,21 +1464,13 @@ test("kb enable search treats lexical aliases for the same KB path as the same p
   await symlink(kbDir, aliasPath);
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+    recordingBasicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
-if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
-  /bin/cat <<'JSON'
-{"projects":[{"name":"research","local_path":"${aliasPath}"}]}
-JSON
-  exit 0
-fi
+${projectListResponseShell(projectListJson([{ name: "research", localPath: aliasPath }]))}
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
 if [ "$1" = "reindex" ]; then exit 0; fi
 exit 2
-`,
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1551,10 +1485,7 @@ test("kb enable search fails closed when Basic Memory project state is malformed
   const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
+    recordingBasicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
   echo 'not json'
@@ -1563,7 +1494,7 @@ fi
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
 if [ "$1" = "reindex" ]; then exit 9; fi
 exit 2
-`,
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1581,33 +1512,19 @@ test("kb enable search recovers from a registration race by accepting a same-pat
   const kbDir = join(harness.home, "kb", "research");
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+    recordingBasicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
-if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
-  count_file="$HOME/project-list-count"
-  count=0
-  if [ -f "$count_file" ]; then count=$(/bin/cat "$count_file"); fi
-  count=$((count + 1))
-  printf '%s' "$count" > "$count_file"
-  if [ "$count" = "1" ]; then
-    echo '{"projects":[]}'
-  else
-    /bin/cat <<'JSON'
-{"projects":[{"name":"research","local_path":"${kbDir}"}]}
-JSON
-  fi
-  exit 0
-fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: kbDir }]),
+])}
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then
   echo "Project already exists" >&2
   exit 1
 fi
 if [ "$1" = "reindex" ]; then exit 0; fi
 exit 2
-`,
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1628,28 +1545,16 @@ test("kb enable search verifies project identity after registration before reind
   const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+    recordingBasicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
-if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
-  count_file="$HOME/project-list-count"
-  count=0
-  if [ -f "$count_file" ]; then count=$(/bin/cat "$count_file"); fi
-  count=$((count + 1))
-  printf '%s' "$count" > "$count_file"
-  if [ "$count" = "1" ]; then
-    echo '{"projects":[]}'
-  else
-    echo '{"projects":[{"name":"research","local_path":"/tmp/other-research"}]}'
-  fi
-  exit 0
-fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: "/tmp/other-research" }]),
+])}
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 0; fi
 if [ "$1" = "reindex" ]; then exit 9; fi
 exit 2
-`,
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -2036,14 +1941,24 @@ lastReflectAt: null
 async function writeEngineStubs(): Promise<void> {
   await harness.writeFakeExecutable(
     "uvx",
-    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then shift 3; fi\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--json\" ]; then printf '{\"projects\":[{\"name\":\"research\",\"local_path\":\"%s/kb/research\"}]}' \"$HOME\"; exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then exit 0; fi\nexit 2\n",
+    basicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${homeResearchProjectListResponseShell()}
+if [ "$1" = "project" ]; then exit 0; fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+`),
   );
 }
 
 async function writeSlowEngineStubs(): Promise<void> {
   await harness.writeFakeExecutable(
     "uvx",
-    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then shift 3; fi\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--json\" ]; then /bin/sleep 0.2; printf '{\"projects\":[{\"name\":\"research\",\"local_path\":\"%s/kb/research\"}]}' \"$HOME\"; exit 0; fi\nif [ \"$1\" = \"project\" ]; then /bin/sleep 0.2; exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then /bin/sleep 0.2; exit 0; fi\nexit 2\n",
+    basicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${homeResearchProjectListResponseShell("  /bin/sleep 0.2")}
+if [ "$1" = "project" ]; then /bin/sleep 0.2; exit 0; fi
+if [ "$1" = "reindex" ]; then /bin/sleep 0.2; exit 0; fi
+`),
   );
 }
 

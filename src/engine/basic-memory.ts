@@ -57,7 +57,7 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
       return available;
     }
 
-    const projectState = await readProjectState(kbPath, projectName);
+    const projectState = await verifyProjectRegistration(kbPath, projectName);
     if (!projectState.ok) {
       return projectState;
     }
@@ -65,7 +65,7 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
       const added = await runBasicMemory(["project", "add", projectName, kbPath], kbPath);
       let registeredProjectState: EngineResult<{ exists: boolean }>;
       if (added.code !== 0) {
-        registeredProjectState = await readProjectState(kbPath, projectName);
+        registeredProjectState = await verifyProjectRegistration(kbPath, projectName);
         if (!registeredProjectState.ok) {
           return registeredProjectState;
         }
@@ -73,7 +73,7 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
           return { ok: false, message: `Basic Memory project add failed. ${firstOutputLine(added)}` };
         }
       } else {
-        registeredProjectState = await readProjectState(kbPath, projectName);
+        registeredProjectState = await verifyProjectRegistration(kbPath, projectName);
       }
       if (!registeredProjectState.ok) {
         return registeredProjectState;
@@ -130,7 +130,7 @@ async function runBasicMemory(args: string[], cwd: string): Promise<ExternalRun>
   return runExternal(cmd, runnerArgs, cwd);
 }
 
-async function readProjectState(kbPath: string, projectName: string): Promise<EngineResult<{ exists: boolean }>> {
+async function verifyProjectRegistration(kbPath: string, projectName: string): Promise<EngineResult<{ exists: boolean }>> {
   const listed = await runBasicMemory(["project", "list", "--json"], kbPath);
   if (listed.code !== 0) {
     return { ok: false, message: `Basic Memory project list failed. ${firstOutputLine(listed)}` };

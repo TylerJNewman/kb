@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { basicMemoryUvxScript, homeResearchProjectListResponseShell } from "./helpers/basic-memory-fake";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
 let harness: KbHarness;
@@ -178,7 +179,12 @@ Line format:
 async function writeEngineStubs(): Promise<void> {
   await harness.writeFakeExecutable(
     "uvx",
-    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then shift 3; fi\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--json\" ]; then printf '{\"projects\":[{\"name\":\"research\",\"local_path\":\"%s/kb/research\"}]}' \"$HOME\"; exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then exit 0; fi\nexit 2\n",
+    basicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${homeResearchProjectListResponseShell()}
+if [ "$1" = "project" ]; then exit 0; fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+`),
   );
 }
 
