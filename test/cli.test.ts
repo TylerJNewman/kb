@@ -1018,6 +1018,49 @@ test("commands reject malformed KB configuration before doing work", async () =>
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(before.replace("schemaVersion: 1", "schemaVersion: 2"));
 });
 
+test("configuration validation rejects representative unsupported required-value shapes without mutation", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const valid = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  const cases = [
+    {
+      content: valid.replace("formatVersion: basic-memory-note-v1", "formatVersion: future-v2"),
+      error: "unsupported formatVersion: future-v2",
+    },
+    {
+      content: valid.replace("formatVersion: basic-memory-note-v1\n", ""),
+      error: "missing formatVersion",
+    },
+    {
+      content: valid.replace("arm: b0", "arm: b0\narm: b0"),
+      error: "duplicate arm",
+    },
+    {
+      content: valid.replace("arm: b0", "arm: mystery"),
+      error: "unknown arm: mystery",
+    },
+    {
+      content: valid.replace("state: disabled", "state: mystery"),
+      error: "unknown Engine state: mystery",
+    },
+    {
+      content: valid.replace("  basicMemory:", "  unrelated:"),
+      error: "missing basicMemory",
+    },
+  ];
+
+  for (const scenario of cases) {
+    await writeFile(join(kbDir, "kb.yaml"), scenario.content);
+    const result = await harness.runKb(["status", "--kb", "research"]);
+    expect(result).toEqual({
+      code: 64,
+      stdout: "",
+      stderr: `kb: invalid kb.yaml: ${scenario.error}\n`,
+    });
+    expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(scenario.content);
+  }
+});
+
 test("contradictory Engine state is rejected instead of defaulting to unknown", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
@@ -1152,6 +1195,47 @@ test("configuration replacement failure leaves prior config parseable and remove
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(before);
   expect((await readdir(kbDir)).filter((entry) => entry.startsWith(".kb.yaml."))).toEqual([]);
   expect((await harness.runKb(["status", "--kb", "research"])).code).toBe(0);
+});
+
+test("injected configuration write and lock failures preserve config and remove owned artifacts", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const before = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  const cases: Array<{ env: Record<string, string>; error: string }> = [
+    { env: { KB_FAIL_CONFIG_COMMIT: "before-write" }, error: "config commit failed before temporary write" },
+    { env: { KB_FAIL_CONFIG_LOCK: "1" }, error: "config lock acquisition failed" },
+    { env: { KB_FAIL_CONFIG_LOCK: "after-mkdir" }, error: "config lock owner write failed: injected owner write failure" },
+  ];
+
+  for (const scenario of cases) {
+    const result = await harness.run("kb", ["reflect", "--kb", "research"], {
+      env: { ...scenario.env, KB_NOW: "2026-07-07T12:00:00.000Z" },
+    });
+    expect(result).toEqual({ code: 69, stdout: "", stderr: `kb: ${scenario.error}\n` });
+    expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(before);
+    expect((await readdir(kbDir)).filter((entry) => entry.startsWith(".kb.yaml."))).toEqual([]);
+  }
+});
+
+test("configuration lock recovery never steals a live lock and does recover a dead owner", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const lockDir = join(kbDir, ".kb.yaml.lock");
+  await mkdir(lockDir);
+  await writeFile(join(lockDir, "owner"), JSON.stringify({ pid: process.pid, createdAt: 0 }));
+
+  const blocked = await harness.run("kb", ["reflect", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+  });
+  expect(blocked).toEqual({ code: 69, stdout: "", stderr: "kb: config lock acquisition timed out\n" });
+  expect(await stat(lockDir)).toBeDefined();
+
+  await writeFile(join(lockDir, "owner"), JSON.stringify({ pid: 2_147_483_647, createdAt: 0 }));
+  const recovered = await harness.run("kb", ["reflect", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+  });
+  expect(recovered.code).toBe(0);
+  expect((await readdir(kbDir)).filter((entry) => entry.startsWith(".kb.yaml."))).toEqual([]);
 });
 
 test("concurrent reflect metadata and Engine transition preserve both updates", async () => {
