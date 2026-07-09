@@ -1002,8 +1002,80 @@ Line format:
   expect(result).toEqual({
     code: 69,
     stdout: "",
-    stderr: "kb: search engine failed; engineless fallback was not used. missing project\n",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search failed. missing project\n",
   });
+});
+
+test("kb search distinguishes malformed Engine JSON without fallback or query logging", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    "#!/bin/sh\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then echo 'not json'; exit 0; fi\nexit 2\n",
+  );
+
+  const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search returned non-JSON output.\n",
+  });
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
+});
+
+test("kb search distinguishes Engine JSON error output without fallback or query logging", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
+  echo '{"error":"project unavailable"}'
+  exit 0
+fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search returned an error. project unavailable\n",
+  });
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
+});
+
+test("kb search distinguishes missing Engine results without fallback or query logging", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
+  echo '{"items":[]}'
+  exit 0
+fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search JSON did not include results.\n",
+  });
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
 });
 
 test("kb status prints counts, health, and an empty Advisor slot for fixture state", async () => {
@@ -1392,6 +1464,77 @@ test("kb enable search reports reindex failure and leaves the KB in B0", async (
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+});
+
+test("kb enable search times out, kills the Engine process tree, and leaves the KB in B0", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "raw", "existing.md"), "# Existing content\n");
+  const beforeHashes = await contentHashes(kbDir);
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "project" ]; then
+  /bin/sh -c '/bin/sleep 60' &
+  echo "$!" > "$HOME/engine-child-pid"
+  wait
+fi
+exit 2
+`,
+  );
+
+  const result = await harness.run("kb", ["enable", "search", "--kb", "research"], {
+    env: { KB_ENGINE_TIMEOUT_MS: "100" },
+  });
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: Basic Memory project add timed out after 100ms.\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+  expect(await contentHashes(kbDir)).toEqual(beforeHashes);
+  expect(await processIsRunning(Number((await readFile(join(harness.home, "engine-child-pid"), "utf8")).trim()))).toBe(false);
+});
+
+test("kb search times out without engineless fallback or a successful query log entry", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+- [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
+- [[memories/alpha.md|Alpha Memory]] | category: research | summary: This would match fallback.
+`);
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
+  /bin/sh -c '/bin/sleep 60' &
+  echo "$!" > "$HOME/engine-child-pid"
+  wait
+fi
+exit 2
+`,
+  );
+
+  const result = await harness.run("kb", ["search", "fallback", "--kb", "research"], {
+    env: { KB_ENGINE_TIMEOUT_MS: "500" },
+  });
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search timed out after 500ms.\n",
+  });
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
+  expect(await processIsRunning(Number((await readFile(join(harness.home, "engine-child-pid"), "utf8")).trim()))).toBe(false);
 });
 
 test("configuration replacement failure leaves prior config parseable and removes temp files", async () => {
@@ -1796,6 +1939,17 @@ function searchShape(stdout: string): string[] {
         .replace(/^Results: \d+$/, "Results: <n>")
         .replace(/^   Match: .+$/, "   Match: <match>")
     );
+}
+
+async function processIsRunning(pid: number): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  const result = Bun.spawn(["/bin/kill", "-0", String(pid)], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return await result.exited === 0;
 }
 
 async function writeMemory(
