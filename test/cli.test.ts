@@ -789,6 +789,22 @@ Line format:
   });
 });
 
+test("kb search distinguishes missing uvx without fallback or query logging", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+
+  const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: search engine failed; engineless fallback was not used. uvx is not on PATH. Install uv, then rerun this command.\n",
+  });
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
+});
+
 test("kb search distinguishes malformed Engine JSON without fallback or query logging", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
@@ -796,7 +812,13 @@ test("kb search distinguishes malformed Engine JSON without fallback or query lo
   const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
   await harness.writeFakeExecutable(
     "uvx",
-    "#!/bin/sh\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then echo 'not json'; exit 0; fi\nexit 2\n",
+    `#!/bin/sh
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
+  /bin/cat '${fixturePath("search-non-json.txt")}'
+  exit 0
+fi
+exit 2
+`,
   );
 
   const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
@@ -818,7 +840,7 @@ test("kb search distinguishes Engine JSON error output without fallback or query
     "uvx",
     `#!/bin/sh
 if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
-  echo '{"error":"project unavailable"}'
+  /bin/cat '${fixturePath("search-json-error.json")}'
   exit 0
 fi
 exit 2
@@ -844,7 +866,7 @@ test("kb search distinguishes missing Engine results without fallback or query l
     "uvx",
     `#!/bin/sh
 if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
-  echo '{"items":[]}'
+  /bin/cat '${fixturePath("search-missing-results.json")}'
   exit 0
 fi
 exit 2
@@ -1206,6 +1228,27 @@ lastReflectAt: null
 `);
   expect(await contentHashes(kbDir)).toEqual(beforeHashes);
   expect((await harness.runKb(["status", "--kb", "research"])).stdout).toContain("Arm: b0 (plain markdown)\nSearch: plain files");
+});
+
+test("kb enable search reports uvx availability failure and leaves the KB in B0", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeHashes = await contentHashes(kbDir);
+  await harness.writeFakeExecutable(
+    "uvx",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'uvx is broken' >&2; exit 2; fi\nexit 2\n",
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: uvx availability failed. uvx is broken\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+  expect(await contentHashes(kbDir)).toEqual(beforeHashes);
 });
 
 test("kb enable search reports install-check failure and leaves the KB in B0", async () => {
