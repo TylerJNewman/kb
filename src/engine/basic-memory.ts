@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { realpath } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import type { EngineConfigPatch, EngineResult, EngineSearchResult, SearchEngineAdapter } from "./types";
 
 type ExternalRun = {
@@ -18,6 +19,15 @@ type BasicMemorySearchResult = {
 type BasicMemorySearchResponse = {
   results?: unknown;
   error?: unknown;
+};
+
+type BasicMemoryProject = {
+  name: string;
+  localPath: string;
+};
+
+type BasicMemoryProjectListResponse = {
+  projects?: unknown;
 };
 
 export const SUPPORTED_BASIC_MEMORY_PACKAGE = "basic-memory==0.22.1";
@@ -47,9 +57,30 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
       return available;
     }
 
-    const added = await runBasicMemory(["project", "add", projectName, kbPath], kbPath);
-    if (added.code !== 0) {
-      return { ok: false, message: `Basic Memory project add failed. ${firstOutputLine(added)}` };
+    const projectState = await readProjectState(kbPath, projectName);
+    if (!projectState.ok) {
+      return projectState;
+    }
+    if (!projectState.value.exists) {
+      const added = await runBasicMemory(["project", "add", projectName, kbPath], kbPath);
+      let registeredProjectState: EngineResult<{ exists: boolean }>;
+      if (added.code !== 0) {
+        registeredProjectState = await readProjectState(kbPath, projectName);
+        if (!registeredProjectState.ok) {
+          return registeredProjectState;
+        }
+        if (!registeredProjectState.value.exists) {
+          return { ok: false, message: `Basic Memory project add failed. ${firstOutputLine(added)}` };
+        }
+      } else {
+        registeredProjectState = await readProjectState(kbPath, projectName);
+      }
+      if (!registeredProjectState.ok) {
+        return registeredProjectState;
+      }
+      if (!registeredProjectState.value.exists) {
+        return { ok: false, message: "Basic Memory project add did not register the project." };
+      }
     }
 
     const reindexed = await runBasicMemory(["reindex", "--project", projectName, "--search"], kbPath);
@@ -97,6 +128,75 @@ async function commandAvailable(cmd: string, cwd: string): Promise<boolean> {
 async function runBasicMemory(args: string[], cwd: string): Promise<ExternalRun> {
   const [cmd, ...runnerArgs] = buildBasicMemoryCommand(args);
   return runExternal(cmd, runnerArgs, cwd);
+}
+
+async function readProjectState(kbPath: string, projectName: string): Promise<EngineResult<{ exists: boolean }>> {
+  const listed = await runBasicMemory(["project", "list", "--json"], kbPath);
+  if (listed.code !== 0) {
+    return { ok: false, message: `Basic Memory project list failed. ${firstOutputLine(listed)}` };
+  }
+
+  let parsed: BasicMemoryProjectListResponse;
+  try {
+    parsed = JSON.parse(listed.stdout) as BasicMemoryProjectListResponse;
+  } catch {
+    return { ok: false, message: "Basic Memory project list returned non-JSON output." };
+  }
+  if (!Array.isArray(parsed.projects)) {
+    return { ok: false, message: "Basic Memory project list JSON did not include projects." };
+  }
+
+  const projects: BasicMemoryProject[] = [];
+  for (const entry of parsed.projects) {
+    const project = parseProject(entry);
+    if (project === null) {
+      return { ok: false, message: "Basic Memory project list contained an unreadable project entry." };
+    }
+    projects.push(project);
+  }
+
+  const matching = projects.filter((project) => project.name === projectName);
+  if (matching.length === 0) {
+    return { ok: true, value: { exists: false } };
+  }
+  if (matching.length > 1) {
+    return { ok: false, message: `Basic Memory project list contains multiple projects named '${projectName}'.` };
+  }
+
+  const project = matching[0]!;
+  const [expectedPath, actualPath] = await Promise.all([
+    canonicalPath(kbPath),
+    canonicalPath(project.localPath),
+  ]);
+  if (actualPath !== expectedPath) {
+    return {
+      ok: false,
+      message: `Basic Memory project conflict: project '${projectName}' points to ${project.localPath}, not ${kbPath}.`,
+    };
+  }
+  return { ok: true, value: { exists: true } };
+}
+
+function parseProject(value: unknown): BasicMemoryProject | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const project = value as { name?: unknown; local_path?: unknown };
+  if (typeof project.name !== "string" || project.name.length === 0) {
+    return null;
+  }
+  if (typeof project.local_path !== "string" || project.local_path.length === 0) {
+    return null;
+  }
+  return { name: project.name, localPath: project.local_path };
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 async function runExternal(cmd: string, args: string[], cwd: string): Promise<ExternalRun> {

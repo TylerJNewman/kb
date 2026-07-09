@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { INDEX_LINE_FORMAT, indexLine } from "../src/memory-format";
@@ -1075,6 +1075,21 @@ if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; 
   echo "Basic Memory version: 0.22.1"
   exit 0
   fi
+  if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  count_file="$HOME/project-list-count"
+  count=0
+  if [ -f "$count_file" ]; then count=$(/bin/cat "$count_file"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$count_file"
+  if [ "$count" = "1" ]; then
+    echo '{"projects":[]}'
+  else
+    /bin/cat <<'JSON'
+{"projects":[{"name":"research","local_path":"${join(harness.home, "kb", "research")}"}]}
+JSON
+  fi
+  exit 0
+  fi
   if [ "$1" = "project" ] && [ "$2" = "add" ]; then
   echo "Project '$3' added successfully"
   exit 0
@@ -1108,7 +1123,9 @@ lastReflectAt: null
 `);
   expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
 uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --json
 uvx --from basic-memory==0.22.1 bm project add research ${kbDir}
+uvx --from basic-memory==0.22.1 bm project list --json
 uvx --from basic-memory==0.22.1 bm reindex --project research --search
 `);
 });
@@ -1160,6 +1177,21 @@ if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; 
   shift 3
 fi
 if [ "$1" = "--version" ]; then
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  count_file="$HOME/project-list-count"
+  count=0
+  if [ -f "$count_file" ]; then count=$(/bin/cat "$count_file"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$count_file"
+  if [ "$count" = "1" ]; then
+    echo '{"projects":[]}'
+  else
+    /bin/cat <<'JSON'
+{"projects":[{"name":"research","local_path":"${kbDir}"}]}
+JSON
+  fi
   exit 0
 fi
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then
@@ -1380,7 +1412,21 @@ test("kb enable search reports reindex failure and leaves the KB in B0", async (
   const kbDir = join(harness.home, "kb", "research");
   await harness.writeFakeExecutable(
     "uvx",
-    "#!/bin/sh\nprintf 'uvx %s\\n' \"$*\" >> \"$HOME/engine-calls\"\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then shift 3; fi\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\necho 'reindex failed' >&2\nexit 1\n",
+    `#!/bin/sh
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  /bin/cat <<'JSON'
+{"projects":[{"name":"research","local_path":"${kbDir}"}]}
+JSON
+  exit 0
+fi
+if [ "$1" = "project" ]; then exit 0; fi
+echo 'reindex failed' >&2
+exit 1
+`,
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1392,6 +1438,234 @@ test("kb enable search reports reindex failure and leaves the KB in B0", async (
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+});
+
+test("kb enable search resumes when the Basic Memory project already points at the same KB", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  /bin/cat <<'JSON'
+{"projects":[{"name":"research","local_path":"${kbDir}"}]}
+JSON
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then
+  echo "unexpected project add" >&2
+  exit 9
+fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({ code: 0, stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n", stderr: "" });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b1\n");
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --json
+uvx --from basic-memory==0.22.1 bm reindex --project research --search
+`);
+});
+
+test("kb enable search rejects a same-name Basic Memory project at another path", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  /bin/cat <<'JSON'
+{"projects":[{"name":"research","local_path":"/tmp/other-research"}]}
+JSON
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
+if [ "$1" = "reindex" ]; then exit 9; fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: `kb: cannot enable search: Basic Memory project conflict: project 'research' points to /tmp/other-research, not ${kbDir}.\n`,
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --json
+`);
+});
+
+test("kb enable search treats lexical aliases for the same KB path as the same project", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const aliasRoot = join(harness.root, "aliases");
+  await mkdir(aliasRoot);
+  const aliasPath = join(aliasRoot, "research-link");
+  await symlink(kbDir, aliasPath);
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  /bin/cat <<'JSON'
+{"projects":[{"name":"research","local_path":"${aliasPath}"}]}
+JSON
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result.code).toBe(0);
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).not.toContain("project add");
+});
+
+test("kb enable search fails closed when Basic Memory project state is malformed", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  echo 'not json'
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
+if [ "$1" = "reindex" ]; then exit 9; fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: Basic Memory project list returned non-JSON output.\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+});
+
+test("kb enable search recovers from a registration race by accepting a same-path winner", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  count_file="$HOME/project-list-count"
+  count=0
+  if [ -f "$count_file" ]; then count=$(/bin/cat "$count_file"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$count_file"
+  if [ "$count" = "1" ]; then
+    echo '{"projects":[]}'
+  else
+    /bin/cat <<'JSON'
+{"projects":[{"name":"research","local_path":"${kbDir}"}]}
+JSON
+  fi
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then
+  echo "Project already exists" >&2
+  exit 1
+fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({ code: 0, stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n", stderr: "" });
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --json
+uvx --from basic-memory==0.22.1 bm project add research ${kbDir}
+uvx --from basic-memory==0.22.1 bm project list --json
+uvx --from basic-memory==0.22.1 bm reindex --project research --search
+`);
+});
+
+test("kb enable search verifies project identity after registration before reindexing", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  count_file="$HOME/project-list-count"
+  count=0
+  if [ -f "$count_file" ]; then count=$(/bin/cat "$count_file"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$count_file"
+  if [ "$count" = "1" ]; then
+    echo '{"projects":[]}'
+  else
+    echo '{"projects":[{"name":"research","local_path":"/tmp/other-research"}]}'
+  fi
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 0; fi
+if [ "$1" = "reindex" ]; then exit 9; fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: `kb: cannot enable search: Basic Memory project conflict: project 'research' points to /tmp/other-research, not ${kbDir}.\n`,
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --json
+uvx --from basic-memory==0.22.1 bm project add research ${kbDir}
+uvx --from basic-memory==0.22.1 bm project list --json
+`);
 });
 
 test("configuration replacement failure leaves prior config parseable and removes temp files", async () => {
@@ -1762,14 +2036,14 @@ lastReflectAt: null
 async function writeEngineStubs(): Promise<void> {
   await harness.writeFakeExecutable(
     "uvx",
-    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then shift 3; fi\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then exit 0; fi\nexit 2\n",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then shift 3; fi\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--json\" ]; then printf '{\"projects\":[{\"name\":\"research\",\"local_path\":\"%s/kb/research\"}]}' \"$HOME\"; exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then exit 0; fi\nexit 2\n",
   );
 }
 
 async function writeSlowEngineStubs(): Promise<void> {
   await harness.writeFakeExecutable(
     "uvx",
-    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then shift 3; fi\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ]; then /bin/sleep 0.2; exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then /bin/sleep 0.2; exit 0; fi\nexit 2\n",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then shift 3; fi\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--json\" ]; then /bin/sleep 0.2; printf '{\"projects\":[{\"name\":\"research\",\"local_path\":\"%s/kb/research\"}]}' \"$HOME\"; exit 0; fi\nif [ \"$1\" = \"project\" ]; then /bin/sleep 0.2; exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then /bin/sleep 0.2; exit 0; fi\nexit 2\n",
   );
 }
 
