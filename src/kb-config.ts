@@ -37,45 +37,50 @@ export async function updateKbConfig(kbPath: string, transform: (config: KbConfi
 }
 
 export function serializeKbConfig(config: KbConfig): string {
+  const validated = validateKbConfig(config);
   return `schemaVersion: 1
 formatVersion: ${FORMAT_VERSION}
-arm: ${config.arm}
+arm: ${validated.arm}
 engine:
   basicMemory:
-    state: ${config.engineState}
-    project: ${config.engineProject ?? "null"}
-lastReflectAt: ${config.lastReflectAt ?? "null"}
+    state: ${validated.engineState}
+    project: ${validated.engineProject ?? "null"}
+lastReflectAt: ${validated.lastReflectAt ?? "null"}
 `;
 }
 
 function parseKbConfig(text: string): KbConfig {
-  const schemaVersion = requiredUniqueScalar(text, "schemaVersion", "top");
+  const entries = parseConfigEntries(text);
+  requireUniqueMapping(entries, ["engine"]);
+  requireUniqueMapping(entries, ["engine", "basicMemory"]);
+
+  const schemaVersion = requiredUniqueScalar(entries, ["schemaVersion"]);
   if (schemaVersion !== "1") {
     throw new KbConfigError(`unsupported schemaVersion: ${schemaVersion}`);
   }
 
-  const formatVersion = requiredUniqueScalar(text, "formatVersion", "top");
+  const formatVersion = requiredUniqueScalar(entries, ["formatVersion"]);
   if (formatVersion !== FORMAT_VERSION) {
     throw new KbConfigError(`unsupported formatVersion: ${formatVersion}`);
   }
 
-  const arm = requiredUniqueScalar(text, "arm", "top");
+  const arm = requiredUniqueScalar(entries, ["arm"]);
   if (!isArm(arm)) {
     throw new KbConfigError(`unknown arm: ${arm}`);
   }
 
-  const engineState = requiredUniqueScalar(text, "state", "engine");
+  const engineState = requiredUniqueScalar(entries, ["engine", "basicMemory", "state"]);
   if (!isEngineState(engineState)) {
     throw new KbConfigError(`unknown Engine state: ${engineState}`);
   }
 
-  const projectValue = requiredUniqueScalar(text, "project", "engine");
+  const projectValue = requiredUniqueScalar(entries, ["engine", "basicMemory", "project"]);
   const engineProject = projectValue === "null" ? null : projectValue;
   if (engineProject !== null && engineProject.length === 0) {
     throw new KbConfigError("empty Engine project");
   }
 
-  const lastReflectValue = requiredUniqueScalar(text, "lastReflectAt", "top");
+  const lastReflectValue = requiredUniqueScalar(entries, ["lastReflectAt"]);
   const lastReflectAt = lastReflectValue === "null" ? null : parseTimestamp("lastReflectAt", lastReflectValue);
 
   return validateKbConfig({ arm, engineState, engineProject, lastReflectAt });
@@ -103,18 +108,66 @@ function validateKbConfig(config: KbConfig): KbConfig {
   return config;
 }
 
-function requiredUniqueScalar(text: string, key: string, scope: "top" | "engine"): string {
-  const pattern = scope === "top"
-    ? new RegExp(`^${key}:\\s*(.+)$`, "gm")
-    : new RegExp(`^    ${key}:\\s*(.+)$`, "gm");
-  const matches = [...text.matchAll(pattern)];
+type ConfigEntry = {
+  path: string[];
+  value: string | null;
+};
+
+function parseConfigEntries(text: string): ConfigEntry[] {
+  const entries: ConfigEntry[] = [];
+  const parents: string[] = [];
+
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "" || line.trimStart().startsWith("#")) {
+      continue;
+    }
+    const match = /^( *)([A-Za-z][A-Za-z0-9]*):(?:\s*(.*))?$/.exec(line);
+    if (match === null || match[1]!.length % 2 !== 0) {
+      throw new KbConfigError(`invalid configuration line: ${line}`);
+    }
+    const depth = match[1]!.length / 2;
+    if (depth > parents.length) {
+      throw new KbConfigError(`invalid configuration nesting: ${line.trim()}`);
+    }
+    parents.length = depth;
+    const key = match[2]!;
+    const rawValue = match[3]?.trim() ?? "";
+    const value = rawValue === "" ? null : rawValue;
+    const path = [...parents, key];
+    entries.push({ path, value });
+    if (value === null) {
+      parents.push(key);
+    }
+  }
+
+  return entries;
+}
+
+function requireUniqueMapping(entries: ConfigEntry[], path: string[]): void {
+  const matches = entries.filter((entry) => entry.value === null && pathsEqual(entry.path, path));
+  const label = path.at(-1)!;
+  if (matches.length === 0) {
+    throw new KbConfigError(`missing ${label}`);
+  }
+  if (matches.length > 1) {
+    throw new KbConfigError(`duplicate ${label}`);
+  }
+}
+
+function requiredUniqueScalar(entries: ConfigEntry[], path: string[]): string {
+  const matches = entries.filter((entry) => entry.value !== null && pathsEqual(entry.path, path));
+  const key = path.at(-1)!;
   if (matches.length === 0) {
     throw new KbConfigError(`missing ${key}`);
   }
   if (matches.length > 1) {
     throw new KbConfigError(`duplicate ${key}`);
   }
-  return matches[0]![1]!.trim();
+  return matches[0]!.value!;
+}
+
+function pathsEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((part, index) => part === right[index]);
 }
 
 function parseTimestamp(field: string, value: string): string {
@@ -135,9 +188,20 @@ async function withConfigLock<T>(kbPath: string, action: () => Promise<T>): Prom
   while (true) {
     try {
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "owner"), JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+      try {
+        if (process.env.KB_FAIL_CONFIG_LOCK === "after-mkdir") {
+          throw new Error("injected owner write failure");
+        }
+        await writeFile(join(lockPath, "owner"), JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+      } catch (error) {
+        await rm(lockPath, { recursive: true, force: true });
+        throw new KbConfigCommitError(`config lock owner write failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
       break;
     } catch (error) {
+      if (error instanceof KbConfigCommitError) {
+        throw error;
+      }
       if (!isNodeError(error) || error.code !== "EEXIST") {
         throw new KbConfigCommitError(`config lock acquisition failed: ${error instanceof Error ? error.message : String(error)}`);
       }

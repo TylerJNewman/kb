@@ -11,7 +11,9 @@ export const VERSION = "0.1.0";
 const EXIT_USAGE = 64;
 const EXIT_UNAVAILABLE = 69;
 const SEARCH_ADVISOR_INDEX_ENTRY_THRESHOLD = 3;
-const SCAFFOLD_ARMS = new Set(["wiki", "b0"]);
+type ScaffoldArm = Extract<KbConfig["arm"], "wiki" | "b0">;
+
+const SCAFFOLD_ARMS: ReadonlySet<string> = new Set<ScaffoldArm>(["wiki", "b0"]);
 
 const PRODUCT_COMMANDS = new Set([
   "start",
@@ -681,7 +683,7 @@ Next: kb add <file-or-url>
   return 0;
 }
 
-function validateArm(arm: string | null): string | null {
+function validateArm(arm: string | null): ScaffoldArm | null {
   const selected = arm ?? "b0";
   if (selected === "b2") {
     writeError("--arm b2 is deferred for v1; use b1 plus the Advisor maintenance reminders.");
@@ -691,14 +693,14 @@ function validateArm(arm: string | null): string | null {
     writeError("b1 requires the search engine — create a b0 KB first, then run `kb enable search`.");
     return null;
   }
-  if (!SCAFFOLD_ARMS.has(selected)) {
+  if (!isScaffoldArm(selected)) {
     writeError(`unknown Arm: ${selected} (expected wiki or b0)`);
     return null;
   }
   return selected;
 }
 
-async function scaffoldKb(kbDir: string, name: string, arm = "b0"): Promise<void> {
+async function scaffoldKb(kbDir: string, name: string, arm: ScaffoldArm = "b0"): Promise<void> {
   if (await exists(join(kbDir, "kb.yaml"))) {
     const error = new Error("KB already exists") as NodeJS.ErrnoException;
     error.code = "EEXIST";
@@ -991,8 +993,12 @@ function isSafeKbName(name: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && name !== "." && name !== "..";
 }
 
-function kbYaml(arm = "b0"): string {
-  return serializeKbConfig({ arm: arm as "wiki" | "b0", engineState: "disabled", engineProject: null, lastReflectAt: null });
+function kbYaml(arm: ScaffoldArm = "b0"): string {
+  return serializeKbConfig({ arm, engineState: "disabled", engineProject: null, lastReflectAt: null });
+}
+
+function isScaffoldArm(arm: string): arm is ScaffoldArm {
+  return SCAFFOLD_ARMS.has(arm);
 }
 
 function agentsMd(): string {
