@@ -20,18 +20,21 @@ type BasicMemorySearchResponse = {
   error?: unknown;
 };
 
+export const SUPPORTED_BASIC_MEMORY_PACKAGE = "basic-memory==0.22.1";
+
+export function buildBasicMemoryCommand(args: string[]): string[] {
+  return ["uvx", "--from", SUPPORTED_BASIC_MEMORY_PACKAGE, "bm", ...args];
+}
+
 export class BasicMemoryAdapter implements SearchEngineAdapter {
   id = "basic-memory";
 
   async ensureAvailable(kbPath: string): Promise<EngineResult<void>> {
-    if (await commandAvailable("bm", kbPath)) {
-      return { ok: true, value: undefined };
-    }
     if (!(await commandAvailable("uvx", kbPath))) {
       return { ok: false, message: "uvx is not on PATH. Install uv, then rerun `kb enable search`." };
     }
 
-    const installed = await runExternal("uvx", ["basic-memory", "--version"], kbPath);
+    const installed = await runBasicMemory(["--version"], kbPath);
     if (installed.code !== 0) {
       return { ok: false, message: `Basic Memory install check failed. ${firstOutputLine(installed)}` };
     }
@@ -44,12 +47,12 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
       return available;
     }
 
-    const added = await runExternal("bm", ["project", "add", projectName, kbPath], kbPath);
+    const added = await runBasicMemory(["project", "add", projectName, kbPath], kbPath);
     if (added.code !== 0) {
       return { ok: false, message: `Basic Memory project add failed. ${firstOutputLine(added)}` };
     }
 
-    const reindexed = await runExternal("bm", ["reindex", "--project", projectName, "--search"], kbPath);
+    const reindexed = await runBasicMemory(["reindex", "--project", projectName, "--search"], kbPath);
     if (reindexed.code !== 0) {
       return { ok: false, message: `Basic Memory reindex failed. ${firstOutputLine(reindexed)}` };
     }
@@ -61,7 +64,7 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
   }
 
   async search(kbPath: string, projectName: string, query: string): Promise<EngineResult<EngineSearchResult[]>> {
-    const run = await runExternal("bm", ["tool", "search-notes", query, "--project", projectName], kbPath);
+    const run = await runBasicMemory(["tool", "search-notes", query, "--project", projectName], kbPath);
     if (run.code !== 0) {
       return { ok: false, message: firstOutputLine(run) };
     }
@@ -89,6 +92,11 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
 
 async function commandAvailable(cmd: string, cwd: string): Promise<boolean> {
   return (await runExternal(cmd, ["--version"], cwd)).code !== 127;
+}
+
+async function runBasicMemory(args: string[], cwd: string): Promise<ExternalRun> {
+  const [cmd, ...runnerArgs] = buildBasicMemoryCommand(args);
+  return runExternal(cmd, runnerArgs, cwd);
 }
 
 async function runExternal(cmd: string, args: string[], cwd: string): Promise<ExternalRun> {

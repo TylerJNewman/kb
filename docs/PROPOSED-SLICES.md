@@ -31,7 +31,7 @@ Stories: 32–35.
 
 **6. `kb enable search` — the engine integration (B0→B1)**
 Blocked by: 4.
-Lazy-install Basic Memory (`uvx`), `bm project add`, sync, flip `kb.yaml`; `kb search` routes to hybrid. Stubbed-`bm`-on-PATH tests. Riskiest slice — proves ADR-0001 (wrap, never fork, lazy install).
+Lazy-run the pinned Basic Memory runner (`uvx --from basic-memory==0.22.1 bm`), add the project, reindex, flip `kb.yaml`; `kb search` routes to hybrid. Stubbed-`uvx` tests model that dispatch without creating `bm`. Riskiest slice — proves ADR-0001 (wrap, never fork, lazy install).
 Stories: 14, 15, 27.
 
 **7. Maintenance playbooks: `kb reflect`, `kb defrag`**

@@ -690,16 +690,15 @@ Results: 1
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("query | retrieval");
 });
 
-test("kb search uses Basic Memory when the Engine is enabled and keeps the normalized output contract", async () => {
+test("kb search uses the pinned Basic Memory runner when the Engine is enabled and keeps the normalized output contract", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
   await enableSearchInConfig(kbDir);
   await harness.writeFakeExecutable(
-    "bm",
+    "uvx",
     `#!/bin/sh
-printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "tool" ] && [ "$2" = "search-notes" ]; then
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ] && [ "$4" = "tool" ] && [ "$5" = "search-notes" ]; then
   /bin/cat '${fixturePath("search-entity.json")}'
   exit 0
 fi
@@ -723,7 +722,7 @@ Results: 1
     stderr: "",
   });
   expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(
-    "bm tool search-notes durable observation --project research\n",
+    "uvx --from basic-memory==0.22.1 bm tool search-notes durable observation --project research\n",
   );
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("query | durable observation");
 });
@@ -750,10 +749,13 @@ Line format:
 
   await enableSearchInConfig(kbDir);
   await harness.writeFakeExecutable(
-    "bm",
+    "uvx",
     `#!/bin/sh
-if [ "$1" = "--version" ]; then exit 0; fi
-/bin/cat '${fixturePath("search-entity.json")}'
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
+  /bin/cat '${fixturePath("search-entity.json")}'
+  exit 0
+fi
+exit 2
 `,
   );
   const engine = await harness.runKb(["search", "durable observation", "--kb", "research"]);
@@ -774,8 +776,8 @@ Line format:
 - [[memories/alpha.md|Alpha Memory]] | category: research | summary: This would match fallback.
 `);
   await harness.writeFakeExecutable(
-    "bm",
-    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\necho 'missing project' >&2\nexit 1\n",
+    "uvx",
+    "#!/bin/sh\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then echo 'missing project' >&2; exit 1; fi\nexit 2\n",
   );
 
   const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
@@ -844,33 +846,27 @@ test("kb status Advisor suggests enable search at the index threshold only", asy
   expect(after.stdout).toContain("- Try `kb enable search`: 3 index entries make hybrid search more useful than plain file search.");
 });
 
-test("kb enable search lazy-installs Basic Memory, adds the project, reindexes, and flips to B1", async () => {
+test("kb enable search runs availability, project add, and reindex through one pinned Basic Memory runner", async () => {
   await scaffoldResearchKb();
   await harness.writeFakeExecutable(
     "uvx",
     `#!/bin/sh
 printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "basic-memory" ] && [ "$2" = "--version" ]; then
-  /bin/cat > "\${0%/*}/bm" <<'SH'
-#!/bin/sh
-printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "--version" ]; then
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
+  shift 3
+  if [ "$1" = "--version" ]; then
   echo "Basic Memory version: 0.22.1"
   exit 0
-fi
-if [ "$1" = "project" ] && [ "$2" = "add" ]; then
+  fi
+  if [ "$1" = "project" ] && [ "$2" = "add" ]; then
   echo "Project '$3' added successfully"
   exit 0
-fi
-if [ "$1" = "reindex" ]; then
+  fi
+  if [ "$1" = "reindex" ]; then
   echo "Reindex complete!"
   exit 0
-fi
-exit 2
-SH
-  /bin/chmod +x "\${0%/*}/bm"
-  echo "Basic Memory version: 0.22.1"
-  exit 0
+  fi
+  exit 2
 fi
 if [ "$1" = "--version" ]; then
   echo "uvx 0.0.0"
@@ -894,9 +890,9 @@ engine:
 lastReflectAt: null
 `);
   expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
-uvx basic-memory --version
-bm project add research ${kbDir}
-bm reindex --project research --search
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project add research ${kbDir}
+uvx --from basic-memory==0.22.1 bm reindex --project research --search
 `);
 });
 
@@ -940,9 +936,15 @@ ${indexLine("memories/gamma-memory.md", "Gamma Memory", "research", "sharedterm 
   const beforeHashes = await contentHashes(kbDir);
 
   await harness.writeFakeExecutable(
-    "bm",
+    "uvx",
     `#!/bin/sh
-printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
+printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
+  shift 3
+fi
+if [ "$1" = "--version" ]; then
+  exit 0
+fi
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then
   echo "Project '$3' added successfully"
   exit 0
@@ -964,7 +966,6 @@ fi
 exit 2
 `,
   );
-  await harness.writeFakeExecutable("uvx", "#!/bin/sh\necho 'uvx should not be needed when bm exists' >&2\nexit 2\n");
 
   const enabled = await harness.runKb(["enable", "search", "--kb", "research"]);
   expect(enabled).toEqual({ code: 0, stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n", stderr: "" });
@@ -978,7 +979,9 @@ exit 2
   const afterSearch = await harness.runKb(["search", "sharedterm", "--kb", "research"]);
   expect(afterSearch.code).toBe(0);
   expect(searchRefs(afterSearch.stdout)).toEqual(beforeRefs);
-  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toContain("bm tool search-notes sharedterm --project research\n");
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toContain(
+    "uvx --from basic-memory==0.22.1 bm tool search-notes sharedterm --project research\n",
+  );
 });
 
 test("kb enable search is idempotent once already enabled", async () => {
@@ -1045,8 +1048,8 @@ test("kb enable search reports reindex failure and leaves the KB in B0", async (
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
   await harness.writeFakeExecutable(
-    "bm",
-    "#!/bin/sh\nprintf 'bm %s\\n' \"$*\" >> \"$HOME/engine-calls\"\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\necho 'reindex failed' >&2\nexit 1\n",
+    "uvx",
+    "#!/bin/sh\nprintf 'uvx %s\\n' \"$*\" >> \"$HOME/engine-calls\"\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"--from\" ] && [ \"$2\" = \"basic-memory==0.22.1\" ] && [ \"$3\" = \"bm\" ]; then shift 3; fi\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\necho 'reindex failed' >&2\nexit 1\n",
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
