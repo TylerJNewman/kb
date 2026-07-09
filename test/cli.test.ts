@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { INDEX_LINE_FORMAT, indexLine } from "../src/memory-format";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
@@ -16,6 +17,67 @@ beforeEach(async () => {
 afterEach(async () => {
   await harness.cleanup();
 });
+
+async function packageVersion(root = resolve(import.meta.dir, "..")): Promise<string> {
+  const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { version: string };
+  return metadata.version;
+}
+
+async function runCopiedRepoKb(root: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn([process.execPath, join(root, "bin/kb"), ...args], {
+    cwd: root,
+    env: {
+      ...process.env,
+      HOME: join(root, "home"),
+      XDG_CONFIG_HOME: join(root, "xdg"),
+      PATH: join(root, "path"),
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+
+  return { code, stdout, stderr };
+}
+
+async function copyRunnableRepoCli(): Promise<string> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "kb-version-test-")));
+  await Promise.all([
+    cp(resolve(import.meta.dir, "../src"), join(root, "src"), { recursive: true }),
+    cp(resolve(import.meta.dir, "../bin"), join(root, "bin"), { recursive: true }),
+    cp(resolve(import.meta.dir, "../package.json"), join(root, "package.json")),
+    mkdir(join(root, "home")),
+    mkdir(join(root, "xdg")),
+    mkdir(join(root, "path")),
+  ]);
+  return root;
+}
+
+async function runProcess(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: Record<string, string> } = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn([command, ...args], {
+    cwd: options.cwd,
+    env: { ...process.env, ...options.env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+
+  return { code, stdout, stderr };
+}
 
 test("kb --help exits 0 and writes the golden help surface to stdout", async () => {
   const result = await harness.runKb(["--help"]);
@@ -44,10 +106,11 @@ test("kb --help exits 0 and writes the golden help surface to stdout", async () 
 
 test("kb --version exits 0 and writes only the version to stdout", async () => {
   const result = await harness.runKb(["--version"]);
+  const version = await packageVersion();
 
   expect(result).toEqual({
     code: 0,
-    stdout: "kb 0.1.0\n",
+    stdout: `kb ${version}\n`,
     stderr: "",
   });
 });
@@ -55,10 +118,11 @@ test("kb --version exits 0 and writes only the version to stdout", async () => {
 test("kb -V is version and bare -v is not a public alias", async () => {
   const version = await harness.runKb(["-V"]);
   const verbose = await harness.runKb(["-v"]);
+  const expectedVersion = await packageVersion();
 
   expect(version).toEqual({
     code: 0,
-    stdout: "kb 0.1.0\n",
+    stdout: `kb ${expectedVersion}\n`,
     stderr: "",
   });
   expect(verbose).toEqual({
@@ -70,12 +134,104 @@ test("kb -V is version and bare -v is not a public alias", async () => {
 
 test("global --kb flag is accepted before a command is routed", async () => {
   const result = await harness.runKb(["--kb", "research", "--version"]);
+  const version = await packageVersion();
 
   expect(result).toEqual({
     code: 0,
-    stdout: "kb 0.1.0\n",
+    stdout: `kb ${version}\n`,
     stderr: "",
   });
+});
+
+test("kb --version follows a package-only version change", async () => {
+  const root = await copyRunnableRepoCli();
+  try {
+    const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as Record<string, unknown>;
+    metadata.version = "9.8.7";
+    await writeFile(join(root, "package.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+
+    const result = await runCopiedRepoKb(root, ["--version"]);
+
+    expect(result).toEqual({
+      code: 0,
+      stdout: "kb 9.8.7\n",
+      stderr: "",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("kb --version fails explicitly when package metadata is missing", async () => {
+  const root = await copyRunnableRepoCli();
+  try {
+    await rm(join(root, "package.json"));
+
+    const result = await runCopiedRepoKb(root, ["--version"]);
+
+    expect(result.code).toBe(69);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("kb: cannot read package metadata");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("packed npm artifact kb --version matches installed package metadata and repository output", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "kb-packed-version-test-")));
+  const packDir = join(root, "pack");
+  const installPrefix = join(root, "install");
+  const binDir = join(root, "bin");
+  const home = join(root, "home");
+  const xdgConfigHome = join(root, "xdg");
+  const npmEnv = {
+    npm_config_cache: join(root, "npm-cache"),
+    npm_config_update_notifier: "false",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+  };
+
+  try {
+    await Promise.all([mkdir(packDir), mkdir(installPrefix), mkdir(binDir), mkdir(home), mkdir(xdgConfigHome)]);
+    await writeFile(join(binDir, "bun"), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 });
+
+    const pack = await runProcess("npm", ["pack", "--json", "--pack-destination", packDir], {
+      cwd: resolve(import.meta.dir, ".."),
+      env: npmEnv,
+    });
+    expect(pack.code, pack.stderr).toBe(0);
+
+    const [packed] = JSON.parse(pack.stdout) as Array<{ filename: string }>;
+    const tarball = join(packDir, packed.filename);
+    const install = await runProcess("npm", ["install", "--ignore-scripts", "--prefix", installPrefix, tarball], {
+      cwd: root,
+      env: npmEnv,
+    });
+    expect(install.code, install.stderr).toBe(0);
+
+    const installedMetadata = JSON.parse(
+      await readFile(join(installPrefix, "node_modules/@tylerjnewman/kb/package.json"), "utf8"),
+    ) as { version: string };
+    const packedKb = join(installPrefix, "node_modules/.bin/kb");
+    const packedVersion = await runProcess(packedKb, ["--version"], {
+      cwd: root,
+      env: {
+        HOME: home,
+        XDG_CONFIG_HOME: xdgConfigHome,
+        PATH: binDir,
+      },
+    });
+    const repositoryVersion = await harness.runKb(["--version"]);
+
+    expect(packedVersion).toEqual({
+      code: 0,
+      stdout: `kb ${installedMetadata.version}\n`,
+      stderr: "",
+    });
+    expect(packedVersion.stdout).toBe(repositoryVersion.stdout);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("unknown command exits non-zero and writes stderr only", async () => {

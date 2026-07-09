@@ -6,14 +6,13 @@ import { BasicMemoryAdapter } from "./engine/basic-memory";
 import { KbConfigCommitError, KbConfigError, readKbConfig, serializeKbConfig, updateKbConfig, type KbConfig } from "./kb-config";
 import { INDEX_LINE_FORMAT, indexLine, memoryFormatPlaybookLines, memoryTemplate } from "./memory-format";
 
-export const VERSION = "0.1.0";
-
 const EXIT_USAGE = 64;
 const EXIT_UNAVAILABLE = 69;
 const SEARCH_ADVISOR_INDEX_ENTRY_THRESHOLD = 3;
 type ScaffoldArm = Extract<KbConfig["arm"], "wiki" | "b0">;
 
 const SCAFFOLD_ARMS: ReadonlySet<string> = new Set<ScaffoldArm>(["wiki", "b0"]);
+const PACKAGE_METADATA_PATH = join(import.meta.dir, "..", "package.json");
 
 const PRODUCT_COMMANDS = new Set([
   "start",
@@ -76,7 +75,12 @@ async function mainUnchecked(argv: string[]): Promise<number> {
   }
 
   if (parsed.version) {
-    process.stdout.write(`kb ${VERSION}\n`);
+    const version = await readPackageVersion();
+    if (!version.ok) {
+      writeError(version.message);
+      return EXIT_UNAVAILABLE;
+    }
+    process.stdout.write(`kb ${version.value}\n`);
     return 0;
   }
 
@@ -111,7 +115,12 @@ async function mainUnchecked(argv: string[]): Promise<number> {
   }
 
   if (parsed.help || parsed.command === null) {
-    process.stdout.write(helpText());
+    const version = await readPackageVersion();
+    if (!version.ok) {
+      writeError(version.message);
+      return EXIT_UNAVAILABLE;
+    }
+    process.stdout.write(helpText(version.value));
     return 0;
   }
 
@@ -279,8 +288,44 @@ function writeError(message: string): void {
   process.stderr.write(`kb: ${message}\n`);
 }
 
-function helpText(): string {
-  return `kb ${VERSION}
+type PackageVersionResult = { ok: true; value: string } | { ok: false; message: string };
+
+async function readPackageVersion(): Promise<PackageVersionResult> {
+  let raw: string;
+  try {
+    raw = await readFile(PACKAGE_METADATA_PATH, "utf8");
+  } catch (error) {
+    return {
+      ok: false,
+      message: `cannot read package metadata at ${PACKAGE_METADATA_PATH}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(raw);
+  } catch (error) {
+    return {
+      ok: false,
+      message: `cannot parse package metadata at ${PACKAGE_METADATA_PATH}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (
+    typeof metadata !== "object" ||
+    metadata === null ||
+    !("version" in metadata) ||
+    typeof metadata.version !== "string" ||
+    metadata.version.length === 0
+  ) {
+    return { ok: false, message: `package metadata at ${PACKAGE_METADATA_PATH} does not contain a valid version` };
+  }
+
+  return { ok: true, value: metadata.version };
+}
+
+function helpText(version: string): string {
+  return `kb ${version}
 
 Create and grow local-first markdown knowledge bases. A KB is a folder you own:
 raw sources stay immutable in raw/, derivatives live in memories/, and the CLI
