@@ -646,6 +646,108 @@ test("Registry rebuild-by-scan reconstructs KB Home entries when config is delet
   expect(await readFile(join(harness.xdgConfigHome, "kb", "config.yaml"), "utf8")).toContain("research:");
 });
 
+test("concurrent Registry registrations keep every distinct KB", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+
+  const [research, papers] = await Promise.all([harness.runKb(["new", "research"]), harness.runKb(["new", "papers"])]);
+
+  expect(research.code, research.stderr).toBe(0);
+  expect(papers.code, papers.stderr).toBe(0);
+  const registryText = await readFile(join(harness.xdgConfigHome, "kb", "config.yaml"), "utf8");
+  expect(registryText).toContain(`  papers: ${join(harness.home, "kb", "papers")}\n`);
+  expect(registryText).toContain(`  research: ${join(harness.home, "kb", "research")}\n`);
+  expect(registryText).toMatch(/^default: (papers|research)\n/);
+  const defaultName = registryText.match(/^default: (.+)$/m)?.[1];
+  expect(registryText).toContain(`  ${defaultName}: `);
+  const listed = await harness.runKb(["list"]);
+  expect(listed.stdout).toContain(`${defaultName === "papers" ? "* " : "  "}papers ${join(harness.home, "kb", "papers")}\n`);
+  expect(listed.stdout).toContain(`${defaultName === "research" ? "* " : "  "}research ${join(harness.home, "kb", "research")}\n`);
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
+
+test("same Registry name and path registration is idempotent but a different path conflicts", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  const shared = join(harness.root, "shared");
+  const existing = join(harness.root, "existing", "shared");
+  const conflictTarget = join(harness.root, "candidate", "shared");
+  await mkdir(shared, { recursive: true });
+  await mkdir(existing, { recursive: true });
+  await mkdir(conflictTarget, { recursive: true });
+  await mkdir(join(harness.xdgConfigHome, "kb"), { recursive: true });
+  await writeFile(join(harness.xdgConfigHome, "kb", "config.yaml"), `default: shared
+kbs:
+  shared: ${shared}
+`);
+
+  const idempotent = await harness.run("kb", ["init"], { cwd: shared });
+  await writeFile(join(harness.xdgConfigHome, "kb", "config.yaml"), `default: shared
+kbs:
+  shared: ${existing}
+`);
+  const conflicted = await harness.run("kb", ["init"], { cwd: conflictTarget });
+
+  expect(idempotent.code, idempotent.stderr).toBe(0);
+  expect(conflicted).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: `kb: Registry conflict: shared already points at ${existing}\n`,
+  });
+  expect(await readFile(join(harness.xdgConfigHome, "kb", "config.yaml"), "utf8")).toBe(`default: shared
+kbs:
+  shared: ${existing}
+`);
+});
+
+test("Registry rejects malformed state instead of rebuilding from KB Home", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  await harness.runKb(["new", "research"]);
+  await writeFile(join(harness.xdgConfigHome, "kb", "config.yaml"), "default: ghost\nkbs:\n  research: /tmp/research\n");
+
+  const result = await harness.runKb(["list"]);
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid Registry: default KB must name an existing entry\n",
+  });
+  expect(await readFile(join(harness.xdgConfigHome, "kb", "config.yaml"), "utf8")).toBe("default: ghost\nkbs:\n  research: /tmp/research\n");
+});
+
+test("Registry paths with spaces Unicode colons and hashes round-trip", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  const kbParent = join(harness.root, "space dir", "unicodé:hash#parent");
+  const kbDir = join(kbParent, "research");
+  await mkdir(kbDir, { recursive: true });
+
+  const created = await harness.run("kb", ["init"], { cwd: kbDir });
+  const listed = await harness.runKb(["list"]);
+
+  expect(created.code, created.stderr).toBe(0);
+  expect(await readFile(join(harness.xdgConfigHome, "kb", "config.yaml"), "utf8")).toBe(`default: research
+kbs:
+  research: ${kbDir}
+`);
+  expect(listed.stdout).toBe(`* research ${kbDir}
+`);
+});
+
+test("failed Registry commit preserves prior entries and removes command temporary files", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  await harness.runKb(["new", "research"]);
+
+  const result = await harness.run("kb", ["new", "papers"], {
+    env: { KB_TEST_FAIL_REGISTRY_COMMIT: "1" },
+  });
+
+  expect(result.code).toBe(69);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toBe("kb: failed to commit Registry\n");
+  expect(await readFile(join(harness.xdgConfigHome, "kb", "config.yaml"), "utf8")).toBe(`default: research
+kbs:
+  research: ${join(harness.home, "kb", "research")}
+`);
+  expect((await readdir(join(harness.xdgConfigHome, "kb"))).filter((entry) => entry.includes(".tmp"))).toEqual([]);
+});
+
 test("kb init --guide prints the non-interactive chooser", async () => {
   const result = await harness.runKb(["init", "--guide"]);
 

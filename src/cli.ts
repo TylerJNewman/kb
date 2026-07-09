@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, parse, resolve } from "node:path";
 import { BasicMemoryAdapter } from "./engine/basic-memory";
@@ -68,6 +68,14 @@ export async function main(argv: string[]): Promise<number> {
       return EXIT_USAGE;
     }
     if (error instanceof KbConfigCommitError) {
+      writeError(error.message);
+      return EXIT_UNAVAILABLE;
+    }
+    if (error instanceof RegistryError) {
+      writeError(`invalid Registry: ${error.message}`);
+      return EXIT_USAGE;
+    }
+    if (error instanceof RegistryCommitError) {
       writeError(error.message);
       return EXIT_UNAVAILABLE;
     }
@@ -689,6 +697,18 @@ ${becameDefault ? `Default: ${name}\n` : ""}Next: kb add <file-or-url>
       writeError(`KB already exists: ${kbDir}`);
       return EXIT_USAGE;
     }
+    if (error instanceof RegistryConflictError) {
+      writeError(error.message);
+      return EXIT_USAGE;
+    }
+    if (error instanceof RegistryError) {
+      writeError(`invalid Registry: ${error.message}`);
+      return EXIT_USAGE;
+    }
+    if (error instanceof RegistryCommitError) {
+      writeError(error.message);
+      return EXIT_UNAVAILABLE;
+    }
     writeError(error instanceof Error ? error.message : String(error));
     return EXIT_UNAVAILABLE;
   }
@@ -729,6 +749,18 @@ Next: kb add <file-or-url>
     if (isNodeError(error) && error.code === "EEXIST") {
       writeError(`KB already exists: ${cwd}`);
       return EXIT_USAGE;
+    }
+    if (error instanceof RegistryConflictError) {
+      writeError(error.message);
+      return EXIT_USAGE;
+    }
+    if (error instanceof RegistryError) {
+      writeError(`invalid Registry: ${error.message}`);
+      return EXIT_USAGE;
+    }
+    if (error instanceof RegistryCommitError) {
+      writeError(error.message);
+      return EXIT_UNAVAILABLE;
     }
     writeError(error instanceof Error ? error.message : String(error));
     return EXIT_UNAVAILABLE;
@@ -1682,6 +1714,27 @@ type Registry = {
   kbs: Map<string, string>;
 };
 
+class RegistryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RegistryError";
+  }
+}
+
+class RegistryConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RegistryConflictError";
+  }
+}
+
+class RegistryCommitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RegistryCommitError";
+  }
+}
+
 function sortedRegistryEntries(registry: Registry): [string, string][] {
   return [...registry.kbs.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
@@ -1706,18 +1759,29 @@ function renderStartNextStep(name: string, counts: KbCounts, advisor: string[]):
 }
 
 async function registerKb(name: string, path: string): Promise<boolean> {
-  const registry = await loadRegistry();
-  const becameDefault = registry.defaultKb === null || (registry.defaultKb === name && registry.kbs.size === 1 && registry.kbs.has(name));
-  registry.kbs.set(name, path);
-  registry.defaultKb ??= name;
-  await writeRegistry(registry);
-  return becameDefault;
+  return withRegistryLock(async () => {
+    const registry = await loadRegistryUnlocked();
+    const existingPath = registry.kbs.get(name);
+    if (existingPath !== undefined && existingPath !== path) {
+      throw new RegistryConflictError(`Registry conflict: ${name} already points at ${existingPath}`);
+    }
+
+    const becameDefault = registry.defaultKb === null || (registry.defaultKb === name && registry.kbs.size === 1 && registry.kbs.has(name));
+    registry.kbs.set(name, path);
+    registry.defaultKb ??= name;
+    await writeRegistryAtomically(validateRegistry(registry));
+    return becameDefault;
+  });
 }
 
 async function loadRegistry(): Promise<Registry> {
+  return validateRegistry(await loadRegistryUnlocked());
+}
+
+async function loadRegistryUnlocked(): Promise<Registry> {
   const path = registryPath();
   try {
-    return parseRegistry(await readFile(path, "utf8"));
+    return validateRegistry(parseRegistry(await readFile(path, "utf8")));
   } catch (error) {
     if (!isNodeError(error) || error.code !== "ENOENT") {
       throw error;
@@ -1726,44 +1790,172 @@ async function loadRegistry(): Promise<Registry> {
 
   const registry = await scanKbHome();
   if (registry.kbs.size > 0) {
-    await writeRegistry(registry);
+    await writeRegistryAtomically(registry);
   }
   return registry;
 }
 
 function parseRegistry(text: string): Registry {
-  let defaultKb: string | null = null;
+  let defaultKb: string | null | undefined;
   const kbs = new Map<string, string>();
   let inKbs = false;
+  let sawKbs = false;
 
-  for (const line of text.split("\n")) {
+  for (const line of text.split(/\r?\n/)) {
+    if (line === "") {
+      continue;
+    }
     if (line.startsWith("default: ")) {
+      if (defaultKb !== undefined) {
+        throw new RegistryError("duplicate default");
+      }
       const value = line.slice("default: ".length).trim();
       defaultKb = value === "null" ? null : value;
+      inKbs = false;
       continue;
     }
     if (line === "kbs:") {
+      if (sawKbs) {
+        throw new RegistryError("duplicate kbs");
+      }
+      sawKbs = true;
       inKbs = true;
       continue;
     }
     if (inKbs) {
       const match = /^  ([A-Za-z0-9._-]+): (.+)$/.exec(line);
-      if (match) {
-        kbs.set(match[1], match[2]);
+      if (match === null) {
+        throw new RegistryError(`invalid entry line: ${line}`);
       }
+      const name = match[1]!;
+      if (kbs.has(name)) {
+        throw new RegistryError(`duplicate KB entry: ${name}`);
+      }
+      kbs.set(name, match[2]!);
+      continue;
+    }
+    throw new RegistryError(`invalid Registry line: ${line}`);
+  }
+
+  if (defaultKb === undefined) {
+    throw new RegistryError("missing default");
+  }
+  if (!sawKbs) {
+    throw new RegistryError("missing kbs");
+  }
+
+  return validateRegistry({ defaultKb, kbs });
+}
+
+function validateRegistry(registry: Registry): Registry {
+  if (registry.defaultKb !== null && !registry.kbs.has(registry.defaultKb)) {
+    throw new RegistryError("default KB must name an existing entry");
+  }
+  for (const [name, path] of registry.kbs) {
+    if (!isSafeKbName(name)) {
+      throw new RegistryError(`invalid KB name: ${name}`);
+    }
+    if (path.length === 0) {
+      throw new RegistryError(`empty path for KB: ${name}`);
+    }
+    if (path.includes("\n") || path.includes("\r")) {
+      throw new RegistryError(`invalid path for KB: ${name}`);
+    }
+  }
+  if (registry.kbs.size === 0 && registry.defaultKb !== null) {
+    throw new RegistryError("empty Registry requires null default");
+  }
+  return registry;
+}
+
+function serializeRegistry(registry: Registry): string {
+  const validated = validateRegistry(registry);
+  const lines = [`default: ${registry.defaultKb ?? "null"}`, "kbs:"];
+  for (const [name, path] of sortedRegistryEntries(validated)) {
+    lines.push(`  ${name}: ${path}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+async function writeRegistryAtomically(registry: Registry): Promise<void> {
+  const path = registryPath();
+  const directory = dirname(path);
+  const tmp = join(directory, `.config.yaml.${process.pid}.${Date.now()}.tmp`);
+  await mkdir(directory, { recursive: true });
+  try {
+    if (process.env.KB_TEST_FAIL_REGISTRY_COMMIT === "1" || process.env.KB_FAIL_REGISTRY_COMMIT === "before-write") {
+      throw new RegistryCommitError("failed to commit Registry");
+    }
+    await writeFile(tmp, serializeRegistry(registry), { flag: "wx" });
+    if (process.env.KB_FAIL_REGISTRY_COMMIT === "before-rename") {
+      throw new RegistryCommitError("failed to commit Registry");
+    }
+    await rename(tmp, path);
+  } catch (error) {
+    await rm(tmp, { force: true });
+    if (error instanceof RegistryCommitError) {
+      throw error;
+    }
+    throw new RegistryCommitError("failed to commit Registry");
+  }
+  await stat(path);
+}
+
+async function withRegistryLock<T>(action: () => Promise<T>): Promise<T> {
+  const lockPath = join(dirname(registryPath()), ".config.yaml.lock");
+  const deadline = Date.now() + 2_000;
+  await mkdir(dirname(registryPath()), { recursive: true });
+
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      try {
+        await writeFile(join(lockPath, "owner"), JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+      } catch (error) {
+        await rm(lockPath, { recursive: true, force: true });
+        throw new RegistryCommitError(`Registry lock owner write failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      break;
+    } catch (error) {
+      if (error instanceof RegistryCommitError) {
+        throw error;
+      }
+      if (!isNodeError(error) || error.code !== "EEXIST") {
+        throw new RegistryCommitError("Registry lock acquisition failed");
+      }
+      await recoverStaleRegistryLock(lockPath);
+      if (Date.now() >= deadline) {
+        throw new RegistryCommitError("Registry lock acquisition timed out");
+      }
+      await Bun.sleep(25);
     }
   }
 
-  return { defaultKb, kbs };
+  try {
+    return await action();
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+  }
 }
 
-async function writeRegistry(registry: Registry): Promise<void> {
-  await mkdir(dirname(registryPath()), { recursive: true });
-  const lines = [`default: ${registry.defaultKb ?? "null"}`, "kbs:"];
-  for (const [name, path] of [...registry.kbs.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    lines.push(`  ${name}: ${path}`);
+async function recoverStaleRegistryLock(lockPath: string): Promise<void> {
+  let owner: { pid?: unknown; createdAt?: unknown } = {};
+  try {
+    owner = JSON.parse(await readFile(join(lockPath, "owner"), "utf8")) as { pid?: unknown; createdAt?: unknown };
+  } catch {
+    return;
   }
-  await writeFile(registryPath(), `${lines.join("\n")}\n`);
+
+  if (typeof owner.pid !== "number" || typeof owner.createdAt !== "number") {
+    return;
+  }
+  if (Date.now() - owner.createdAt < 10_000) {
+    return;
+  }
+  if (isPidAlive(owner.pid)) {
+    return;
+  }
+  await rm(lockPath, { recursive: true, force: true });
 }
 
 async function scanKbHome(): Promise<Registry> {
@@ -1781,7 +1973,7 @@ async function scanKbHome(): Promise<Registry> {
     }
   }
 
-  return { defaultKb: [...kbs.keys()].sort()[0] ?? null, kbs };
+  return validateRegistry({ defaultKb: [...kbs.keys()].sort()[0] ?? null, kbs });
 }
 
 async function resolveTargetKb(kbName: string | null): Promise<{ name: string; path: string } | null> {
@@ -1835,6 +2027,15 @@ async function runSilent(cmd: string, args: string[], cwd: string): Promise<numb
     return await proc.exited;
   } catch {
     return 127;
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isNodeError(error) && error.code === "EPERM";
   }
 }
 
