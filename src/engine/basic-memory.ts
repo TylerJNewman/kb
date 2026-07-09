@@ -5,6 +5,13 @@ type ExternalRun = {
   code: number;
   stdout: string;
   stderr: string;
+  timedOut: boolean;
+  timeoutMs: number;
+};
+
+type EngineOperation = {
+  label: string;
+  timeoutMs: number;
 };
 
 type BasicMemorySearchResult = {
@@ -22,6 +29,16 @@ type BasicMemorySearchResponse = {
 
 export const SUPPORTED_BASIC_MEMORY_PACKAGE = "basic-memory==0.22.1";
 
+const DEFAULT_ENGINE_TIMEOUT_MS = 30_000;
+
+const ENGINE_OPERATIONS = {
+  uvxAvailability: { label: "uvx availability", timeoutMs: 5_000 },
+  installCheck: { label: "Basic Memory install check", timeoutMs: DEFAULT_ENGINE_TIMEOUT_MS },
+  projectAdd: { label: "Basic Memory project add", timeoutMs: DEFAULT_ENGINE_TIMEOUT_MS },
+  reindex: { label: "Basic Memory reindex", timeoutMs: DEFAULT_ENGINE_TIMEOUT_MS },
+  search: { label: "Basic Memory search", timeoutMs: DEFAULT_ENGINE_TIMEOUT_MS },
+} as const satisfies Record<string, EngineOperation>;
+
 export function buildBasicMemoryCommand(args: string[]): string[] {
   return ["uvx", "--from", SUPPORTED_BASIC_MEMORY_PACKAGE, "bm", ...args];
 }
@@ -30,11 +47,18 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
   id = "basic-memory";
 
   async ensureAvailable(kbPath: string): Promise<EngineResult<void>> {
-    if (!(await commandAvailable("uvx", kbPath))) {
+    const uvx = await commandAvailable("uvx", kbPath);
+    if (uvx.timedOut) {
+      return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.uvxAvailability, uvx) };
+    }
+    if (uvx.code === 127) {
       return { ok: false, message: "uvx is not on PATH. Install uv, then rerun `kb enable search`." };
     }
 
-    const installed = await runBasicMemory(["--version"], kbPath);
+    const installed = await runBasicMemory(["--version"], kbPath, ENGINE_OPERATIONS.installCheck);
+    if (installed.timedOut) {
+      return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.installCheck, installed) };
+    }
     if (installed.code !== 0) {
       return { ok: false, message: `Basic Memory install check failed. ${firstOutputLine(installed)}` };
     }
@@ -47,12 +71,18 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
       return available;
     }
 
-    const added = await runBasicMemory(["project", "add", projectName, kbPath], kbPath);
+    const added = await runBasicMemory(["project", "add", projectName, kbPath], kbPath, ENGINE_OPERATIONS.projectAdd);
+    if (added.timedOut) {
+      return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.projectAdd, added) };
+    }
     if (added.code !== 0) {
       return { ok: false, message: `Basic Memory project add failed. ${firstOutputLine(added)}` };
     }
 
-    const reindexed = await runBasicMemory(["reindex", "--project", projectName, "--search"], kbPath);
+    const reindexed = await runBasicMemory(["reindex", "--project", projectName, "--search"], kbPath, ENGINE_OPERATIONS.reindex);
+    if (reindexed.timedOut) {
+      return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.reindex, reindexed) };
+    }
     if (reindexed.code !== 0) {
       return { ok: false, message: `Basic Memory reindex failed. ${firstOutputLine(reindexed)}` };
     }
@@ -64,23 +94,26 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
   }
 
   async search(kbPath: string, projectName: string, query: string): Promise<EngineResult<EngineSearchResult[]>> {
-    const run = await runBasicMemory(["tool", "search-notes", query, "--project", projectName], kbPath);
+    const run = await runBasicMemory(["tool", "search-notes", query, "--project", projectName], kbPath, ENGINE_OPERATIONS.search);
+    if (run.timedOut) {
+      return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.search, run) };
+    }
     if (run.code !== 0) {
-      return { ok: false, message: firstOutputLine(run) };
+      return { ok: false, message: `Basic Memory search failed. ${firstOutputLine(run)}` };
     }
 
     let parsed: BasicMemorySearchResponse;
     try {
       parsed = JSON.parse(run.stdout) as BasicMemorySearchResponse;
     } catch {
-      return { ok: false, message: "Basic Memory returned non-JSON output." };
+      return { ok: false, message: "Basic Memory search returned non-JSON output." };
     }
 
     if (parsed.error !== undefined) {
-      return { ok: false, message: String(parsed.error) };
+      return { ok: false, message: `Basic Memory search returned an error. ${String(parsed.error)}` };
     }
     if (!Array.isArray(parsed.results)) {
-      return { ok: false, message: "Basic Memory JSON did not include results." };
+      return { ok: false, message: "Basic Memory search JSON did not include results." };
     }
 
     return {
@@ -90,38 +123,93 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
   }
 }
 
-async function commandAvailable(cmd: string, cwd: string): Promise<boolean> {
-  return (await runExternal(cmd, ["--version"], cwd)).code !== 127;
+async function commandAvailable(cmd: string, cwd: string): Promise<ExternalRun> {
+  return runExternal(cmd, ["--version"], cwd, ENGINE_OPERATIONS.uvxAvailability);
 }
 
-async function runBasicMemory(args: string[], cwd: string): Promise<ExternalRun> {
+async function runBasicMemory(args: string[], cwd: string, operation: EngineOperation): Promise<ExternalRun> {
   const [cmd, ...runnerArgs] = buildBasicMemoryCommand(args);
-  return runExternal(cmd, runnerArgs, cwd);
+  return runExternal(cmd, runnerArgs, cwd, operation);
 }
 
-async function runExternal(cmd: string, args: string[], cwd: string): Promise<ExternalRun> {
+async function runExternal(cmd: string, args: string[], cwd: string, operation: EngineOperation): Promise<ExternalRun> {
+  const timeoutMs = engineTimeoutMs(operation);
+  let timedOut = false;
+  let killWithSigkill: ReturnType<typeof setTimeout> | null = null;
   try {
     const proc = Bun.spawn([cmd, ...args], {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
     });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      killProcessTree(proc.pid, "SIGTERM");
+      killWithSigkill = setTimeout(() => killProcessTree(proc.pid, "SIGKILL"), 100);
+      killWithSigkill.unref?.();
+    }, timeoutMs);
+    timeout.unref?.();
     const [stdout, stderr, code] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
-    return { code, stdout, stderr };
+    clearTimeout(timeout);
+    if (killWithSigkill !== null) {
+      clearTimeout(killWithSigkill);
+    }
+    return { code, stdout, stderr, timedOut, timeoutMs };
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
-      return { code: 127, stdout: "", stderr: "" };
+      return { code: 127, stdout: "", stderr: "", timedOut: false, timeoutMs };
     }
     throw error;
   }
 }
 
+function killProcessTree(pid: number, signal: NodeJS.Signals): void {
+  const quotedSignal = signal.replace(/[^A-Z0-9]/g, "");
+  Bun.spawnSync([
+    "/bin/sh",
+    "-c",
+    `kill_tree() {
+  for child in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do
+    kill_tree "$child"
+  done
+  /bin/kill -${quotedSignal} "$1" 2>/dev/null || true
+}
+kill_tree "$1"`,
+    "kill-tree",
+    String(pid),
+  ]);
+}
+
+function engineTimeoutMs(operation: EngineOperation): number {
+  const override = Number(process.env.KB_ENGINE_TIMEOUT_MS);
+  if (operation !== ENGINE_OPERATIONS.uvxAvailability && Number.isInteger(override) && override > 0) {
+    return override;
+  }
+  return operation.timeoutMs;
+}
+
+function timeoutMessage(operation: EngineOperation, run: ExternalRun): string {
+  const diagnostic = firstOutputLineOrNull(run);
+  return `${operation.label} timed out after ${run.timeoutMs}ms.${diagnostic === null ? "" : ` ${diagnostic}`}`;
+}
+
 function firstOutputLine(run: ExternalRun): string {
-  return `${run.stderr}\n${run.stdout}`.split("\n").map((line) => line.trim()).find(Boolean) ?? `exit ${run.code}`;
+  return firstOutputLineOrNull(run) ?? `exit ${run.code}`;
+}
+
+function firstOutputLineOrNull(run: ExternalRun): string | null {
+  return `${run.stderr}\n${run.stdout}`
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && !isSignalNoise(line)) ?? null;
+}
+
+function isSignalNoise(line: string): boolean {
+  return /\b(Terminated|Killed):?\s*\d*\b/.test(line);
 }
 
 function normalizeBasicMemoryResult(value: unknown): EngineSearchResult | null {
