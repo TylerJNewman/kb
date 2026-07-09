@@ -23,26 +23,19 @@ async function packageVersion(root = resolve(import.meta.dir, "..")): Promise<st
   return metadata.version;
 }
 
+function isolatedKbEnv(root: string, path = join(root, "path")): Record<string, string> {
+  return {
+    HOME: join(root, "home"),
+    XDG_CONFIG_HOME: join(root, "xdg"),
+    PATH: path,
+  };
+}
+
 async function runCopiedRepoKb(root: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn([process.execPath, join(root, "bin/kb"), ...args], {
+  return runProcess(process.execPath, [join(root, "bin/kb"), ...args], {
     cwd: root,
-    env: {
-      ...process.env,
-      HOME: join(root, "home"),
-      XDG_CONFIG_HOME: join(root, "xdg"),
-      PATH: join(root, "path"),
-    },
-    stdout: "pipe",
-    stderr: "pipe",
+    env: isolatedKbEnv(root),
   });
-
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-
-  return { code, stdout, stderr };
 }
 
 async function copyRunnableRepoCli(): Promise<string> {
@@ -182,8 +175,6 @@ test("packed npm artifact kb --version matches installed package metadata and re
   const packDir = join(root, "pack");
   const installPrefix = join(root, "install");
   const binDir = join(root, "bin");
-  const home = join(root, "home");
-  const xdgConfigHome = join(root, "xdg");
   const npmEnv = {
     npm_config_cache: join(root, "npm-cache"),
     npm_config_update_notifier: "false",
@@ -192,7 +183,13 @@ test("packed npm artifact kb --version matches installed package metadata and re
   };
 
   try {
-    await Promise.all([mkdir(packDir), mkdir(installPrefix), mkdir(binDir), mkdir(home), mkdir(xdgConfigHome)]);
+    await Promise.all([
+      mkdir(packDir),
+      mkdir(installPrefix),
+      mkdir(binDir),
+      mkdir(join(root, "home")),
+      mkdir(join(root, "xdg")),
+    ]);
     await writeFile(join(binDir, "bun"), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 });
 
     const pack = await runProcess("npm", ["pack", "--json", "--pack-destination", packDir], {
@@ -215,11 +212,7 @@ test("packed npm artifact kb --version matches installed package metadata and re
     const packedKb = join(installPrefix, "node_modules/.bin/kb");
     const packedVersion = await runProcess(packedKb, ["--version"], {
       cwd: root,
-      env: {
-        HOME: home,
-        XDG_CONFIG_HOME: xdgConfigHome,
-        PATH: binDir,
-      },
+      env: isolatedKbEnv(root, binDir),
     });
     const repositoryVersion = await harness.runKb(["--version"]);
 
