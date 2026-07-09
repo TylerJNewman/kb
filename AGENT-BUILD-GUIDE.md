@@ -21,7 +21,7 @@ The spike (`docs/spikes/basic-memory-contract.md`, fixtures in `test/fixtures/ba
 - Add project: `uvx --from basic-memory==0.22.1 bm project add <name> <path>`.
 - Index (there is NO `bm sync`): `uvx --from basic-memory==0.22.1 bm reindex --project <name> --search`.
 - Search: `uvx --from basic-memory==0.22.1 bm tool search-notes "<query>" --project <name>` — **prints JSON by default; does NOT accept `--json`/`--format json`** (passing them errors). Optional `--entity-type observation|relation`.
-- Status: `bm status --project <name> --json` (can time out if no server running).
+- Status: `uvx --from basic-memory==0.22.1 bm status --project <name> --json` (can time out if no server running).
 - Fake `uvx`/`bm` stubs in tests must replay the fixtures under `test/fixtures/basic-memory-contract/`.
 
 ## Note-format contract (must stay Basic Memory compatible)

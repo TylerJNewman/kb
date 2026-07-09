@@ -1005,6 +1005,8 @@ lastReflectAt: null
 test("kb enable search fails clearly without uvx and leaves the KB in B0", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "raw", "existing.md"), "# Existing content\n");
+  const beforeHashes = await contentHashes(kbDir);
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
 
@@ -1022,12 +1024,15 @@ engine:
     project: null
 lastReflectAt: null
 `);
+  expect(await contentHashes(kbDir)).toEqual(beforeHashes);
   expect((await harness.runKb(["status", "--kb", "research"])).stdout).toContain("Arm: b0 (plain markdown)\nSearch: plain files");
 });
 
 test("kb enable search reports install-check failure and leaves the KB in B0", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "raw", "existing.md"), "# Existing content\n");
+  const beforeHashes = await contentHashes(kbDir);
   await harness.writeFakeExecutable(
     "uvx",
     "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'uvx 0.0.0'; exit 0; fi\necho 'Basic Memory install failed' >&2\nexit 2\n",
@@ -1042,6 +1047,7 @@ test("kb enable search reports install-check failure and leaves the KB in B0", a
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+  expect(await contentHashes(kbDir)).toEqual(beforeHashes);
 });
 
 test("kb enable search reports reindex failure and leaves the KB in B0", async () => {
