@@ -7,6 +7,7 @@ type ExternalRun = {
   stderr: string;
   timedOut: boolean;
   timeoutMs: number;
+  missingDependency: boolean;
 };
 
 type EngineOperation = {
@@ -54,6 +55,9 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
     if (uvx.code === 127) {
       return { ok: false, message: "uvx is not on PATH. Install uv, then rerun `kb enable search`." };
     }
+    if (uvx.code !== 0) {
+      return { ok: false, message: `uvx availability failed. ${firstOutputLine(uvx)}` };
+    }
 
     const installed = await runBasicMemory(["--version"], kbPath, ENGINE_OPERATIONS.installCheck);
     if (installed.timedOut) {
@@ -97,6 +101,9 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
     const run = await runBasicMemory(["tool", "search-notes", query, "--project", projectName], kbPath, ENGINE_OPERATIONS.search);
     if (run.timedOut) {
       return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.search, run) };
+    }
+    if (run.missingDependency) {
+      return { ok: false, message: "uvx is not on PATH. Install uv, then rerun this command." };
     }
     if (run.code !== 0) {
       return { ok: false, message: `Basic Memory search failed. ${firstOutputLine(run)}` };
@@ -158,10 +165,10 @@ async function runExternal(cmd: string, args: string[], cwd: string, operation: 
     if (killWithSigkill !== null) {
       clearTimeout(killWithSigkill);
     }
-    return { code, stdout, stderr, timedOut, timeoutMs };
+    return { code, stdout, stderr, timedOut, timeoutMs, missingDependency: false };
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
-      return { code: 127, stdout: "", stderr: "", timedOut: false, timeoutMs };
+      return { code: 127, stdout: "", stderr: "", timedOut: false, timeoutMs, missingDependency: true };
     }
     throw error;
   }
