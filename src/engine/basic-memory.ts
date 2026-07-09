@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { realpath } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import type { EngineConfigPatch, EngineResult, EngineSearchResult, SearchEngineAdapter } from "./types";
 
 type ExternalRun = {
@@ -28,6 +29,15 @@ type BasicMemorySearchResponse = {
   error?: unknown;
 };
 
+type BasicMemoryProject = {
+  name: string;
+  localPath: string;
+};
+
+type BasicMemoryProjectListResponse = {
+  projects?: unknown;
+};
+
 export const SUPPORTED_BASIC_MEMORY_PACKAGE = "basic-memory==0.22.1";
 
 const DEFAULT_ENGINE_TIMEOUT_MS = 30_000;
@@ -35,6 +45,7 @@ const DEFAULT_ENGINE_TIMEOUT_MS = 30_000;
 const ENGINE_OPERATIONS = {
   uvxAvailability: { label: "uvx availability", timeoutMs: 5_000 },
   installCheck: { label: "Basic Memory install check", timeoutMs: DEFAULT_ENGINE_TIMEOUT_MS },
+  projectList: { label: "Basic Memory project list", timeoutMs: DEFAULT_ENGINE_TIMEOUT_MS },
   projectAdd: { label: "Basic Memory project add", timeoutMs: DEFAULT_ENGINE_TIMEOUT_MS },
   reindex: { label: "Basic Memory reindex", timeoutMs: DEFAULT_ENGINE_TIMEOUT_MS },
   search: { label: "Basic Memory search", timeoutMs: DEFAULT_ENGINE_TIMEOUT_MS },
@@ -75,12 +86,24 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
       return available;
     }
 
-    const added = await runBasicMemory(["project", "add", projectName, kbPath], kbPath, ENGINE_OPERATIONS.projectAdd);
-    if (added.timedOut) {
-      return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.projectAdd, added) };
+    const projectState = await verifyProjectRegistration(kbPath, projectName);
+    if (!projectState.ok) {
+      return projectState;
     }
-    if (added.code !== 0) {
-      return { ok: false, message: `Basic Memory project add failed. ${firstOutputLine(added)}` };
+    if (!projectState.value.exists) {
+      const added = await runBasicMemory(["project", "add", projectName, kbPath], kbPath, ENGINE_OPERATIONS.projectAdd);
+      if (added.timedOut) {
+        return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.projectAdd, added) };
+      }
+      const registeredProjectState = await verifyProjectRegistration(kbPath, projectName);
+      if (!registeredProjectState.ok) {
+        return registeredProjectState;
+      }
+      if (!registeredProjectState.value.exists) {
+        return added.code === 0
+          ? { ok: false, message: "Basic Memory project add did not register the project." }
+          : { ok: false, message: `Basic Memory project add failed. ${firstOutputLine(added)}` };
+      }
     }
 
     const reindexed = await runBasicMemory(["reindex", "--project", projectName, "--search"], kbPath, ENGINE_OPERATIONS.reindex);
@@ -126,9 +149,18 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
       return { ok: false, message: "Basic Memory search JSON did not include results." };
     }
 
+    const results: EngineSearchResult[] = [];
+    for (const [index, result] of parsed.results.entries()) {
+      const normalized = normalizeBasicMemoryResult(result);
+      if (normalized === null) {
+        return { ok: false, message: `Basic Memory search JSON contained a malformed result at index ${index}.` };
+      }
+      results.push(normalized);
+    }
+
     return {
       ok: true,
-      value: parsed.results.map((result) => normalizeBasicMemoryResult(result)).filter((result): result is EngineSearchResult => result !== null),
+      value: results,
     };
   }
 }
@@ -140,6 +172,81 @@ async function commandAvailable(cmd: string, cwd: string): Promise<ExternalRun> 
 async function runBasicMemory(args: string[], cwd: string, operation: EngineOperation): Promise<ExternalRun> {
   const [cmd, ...runnerArgs] = buildBasicMemoryCommand(args);
   return runExternal(cmd, runnerArgs, cwd, operation);
+}
+
+async function verifyProjectRegistration(kbPath: string, projectName: string): Promise<EngineResult<{ exists: boolean }>> {
+  const listed = await runBasicMemory(["project", "list", "--json"], kbPath, ENGINE_OPERATIONS.projectList);
+  if (listed.timedOut) {
+    return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.projectList, listed) };
+  }
+  if (listed.missingDependency) {
+    return { ok: false, message: "Basic Memory project list failed. uvx is not on PATH. Install uv, then rerun this command." };
+  }
+  if (listed.code !== 0) {
+    return { ok: false, message: `Basic Memory project list failed. ${firstOutputLine(listed)}` };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(listed.stdout) as unknown;
+  } catch {
+    return { ok: false, message: "Basic Memory project list returned non-JSON output." };
+  }
+  if (parsed === null || typeof parsed !== "object" || !("projects" in parsed) || !Array.isArray(parsed.projects)) {
+    return { ok: false, message: "Basic Memory project list JSON did not include projects." };
+  }
+
+  const projects: BasicMemoryProject[] = [];
+  for (const entry of parsed.projects) {
+    const project = parseProject(entry);
+    if (project === null) {
+      return { ok: false, message: "Basic Memory project list contained an unreadable project entry." };
+    }
+    projects.push(project);
+  }
+
+  const matching = projects.filter((project) => project.name === projectName);
+  if (matching.length === 0) {
+    return { ok: true, value: { exists: false } };
+  }
+  if (matching.length > 1) {
+    return { ok: false, message: `Basic Memory project list contains multiple projects named '${projectName}'.` };
+  }
+
+  const project = matching[0]!;
+  const [expectedPath, actualPath] = await Promise.all([
+    canonicalPath(kbPath),
+    canonicalPath(project.localPath),
+  ]);
+  if (actualPath !== expectedPath) {
+    return {
+      ok: false,
+      message: `Basic Memory project conflict: project '${projectName}' points to ${project.localPath}, not ${kbPath}.`,
+    };
+  }
+  return { ok: true, value: { exists: true } };
+}
+
+function parseProject(value: unknown): BasicMemoryProject | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const project = value as { name?: unknown; local_path?: unknown };
+  if (typeof project.name !== "string" || project.name.length === 0) {
+    return null;
+  }
+  if (typeof project.local_path !== "string" || project.local_path.length === 0) {
+    return null;
+  }
+  return { name: project.name, localPath: project.local_path };
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 async function runExternal(cmd: string, args: string[], cwd: string, operation: EngineOperation): Promise<ExternalRun> {
