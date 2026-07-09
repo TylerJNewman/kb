@@ -760,6 +760,74 @@ permalink: example-memory
   expect(memory).toContain("- relates_to [[Target Memory]]");
 });
 
+test("kb draft round-trips natural Memory titles through the note frontmatter", async () => {
+  await scaffoldResearchKb();
+  const title = `: "Quoted" # Hash 研究 [draft]`;
+
+  const result = await harness.runKb(["draft", title, "--kb", "research"]);
+  const kbDir = join(harness.home, "kb", "research");
+  const memoryFiles = await readdir(join(kbDir, "memories"));
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: "Created memories/m-c0de2b2e61fa.md\n",
+    stderr: "",
+  });
+  expect(memoryFiles).toEqual(["m-c0de2b2e61fa.md"]);
+  expect(await readFile(join(kbDir, "memories", "m-c0de2b2e61fa.md"), "utf8")).toContain(`---
+title: ": \\"Quoted\\" # Hash 研究 [draft]"
+type: note
+tags:
+  - research
+permalink: m-c0de2b2e61fa
+---`);
+});
+
+test("kb draft preserves YAML implicit scalar titles as strings", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+
+  for (const [title, file] of [
+    ["true", "true.md"],
+    ["null", "null.md"],
+    ["123", "123.md"],
+    ["2026-07-09", "2026-07-09.md"],
+  ] as const) {
+    const result = await harness.runKb(["draft", title, "--kb", "research"]);
+
+    expect(result).toEqual({ code: 0, stdout: `Created memories/${file}\n`, stderr: "" });
+    expect(await readFile(join(kbDir, "memories", file), "utf8")).toContain(`title: "${title}"`);
+  }
+});
+
+test("kb draft rejects ambiguous catalog titles before creating files", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+
+  for (const title of ["Pipe | Title", "Closing ]] Title", "Control\u0001Title"]) {
+    const result = await harness.runKb(["draft", title, "--kb", "research"]);
+
+    expect(result).toEqual({
+      code: 64,
+      stdout: "",
+      stderr: "kb: title contains characters that cannot be represented unambiguously in the catalog\n",
+    });
+    expect(await readdir(join(kbDir, "memories"))).toEqual([]);
+  }
+});
+
+test("kb draft creates deterministic collision-resistant slugs for non-ASCII and punctuation titles", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+
+  const unicode = await harness.runKb(["draft", "研究", "--kb", "research"]);
+  const punctuation = await harness.runKb(["draft", "!!!", "--kb", "research"]);
+
+  expect(unicode).toEqual({ code: 0, stdout: "Created memories/m-4ff0f1dda80f.md\n", stderr: "" });
+  expect(punctuation).toEqual({ code: 0, stdout: "Created memories/m-e84c538e7fe2.md\n", stderr: "" });
+  expect((await readdir(join(kbDir, "memories"))).sort()).toEqual(["m-4ff0f1dda80f.md", "m-e84c538e7fe2.md"]);
+});
+
 test("kb note remains a hidden alias for draft", async () => {
   await scaffoldResearchKb();
 

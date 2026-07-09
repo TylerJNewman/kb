@@ -1,10 +1,30 @@
 import { expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FORMAT_VERSION, INDEX_LINE_FORMAT, memoryFrontmatter, OBSERVATION_EXAMPLE, RELATION_EXAMPLE } from "../src/memory-format";
+import {
+  FORMAT_VERSION,
+  INDEX_LINE_FORMAT,
+  indexLine,
+  memoryFrontmatter,
+  memoryTemplate,
+  OBSERVATION_EXAMPLE,
+  parseIndexLine,
+  readBasicMemoryScalar,
+  RELATION_EXAMPLE,
+  slugForMemoryTitle,
+  validateMemoryTitle,
+} from "../src/memory-format";
 
+// Forced seam: the reliability-hardening ticket requires a Memory format-contract
+// seam in addition to subprocess CLI tests, so this file tests the public
+// Memory-format module directly. The opt-in real Basic Memory test below is a
+// compatibility lane for the exact supported package version, not part of the
+// default deterministic suite.
 const fixturesDir = join(import.meta.dir, "fixtures");
 const basicMemoryContractDir = join(fixturesDir, "basic-memory-contract");
+const realBasicMemoryTest = process.env.KB_REAL_BASIC_MEMORY_CONTRACT === "1" ? test : test.skip;
+const supportedBasicMemoryPackage = "basic-memory==0.22.1";
 
 test("kb.yaml fixture pins the scaffold config contract", async () => {
   const yaml = await readFixture("kb.yaml");
@@ -36,8 +56,155 @@ test("Basic Memory note fixture pins frontmatter, observation, and relation synt
   const note = await readFixture("basic-memory-note.md");
 
   expect(note).toContain(memoryFrontmatter("Example Memory", "example-memory"));
+  expect(readBasicMemoryScalar(note, "title")).toBe("Example Memory");
+  expect(readBasicMemoryScalar(note, "type")).toBe("note");
+  expect(readBasicMemoryScalar(note, "permalink")).toBe("example-memory");
   expect(note).toContain(OBSERVATION_EXAMPLE.replace("category", "summary").replace("fact", "One durable observation.").replace("tag", "research"));
   expect(note).toContain(RELATION_EXAMPLE.replace("Target", "Target Memory"));
+});
+
+test("Memory frontmatter preserves natural titles as valid Basic Memory YAML", () => {
+  const title = `: "Quoted" # Hash 研究`;
+  const frontmatter = memoryFrontmatter(title, slugForMemoryTitle(title));
+
+  expect(frontmatter).toBe(`---
+title: ": \\"Quoted\\" # Hash 研究"
+type: note
+tags:
+  - research
+permalink: m-8209b082cff8
+---`);
+  expect(readBasicMemoryScalar(frontmatter, "title")).toBe(title);
+  expect(readBasicMemoryScalar(frontmatter, "type")).toBe("note");
+  expect(readBasicMemoryScalar(frontmatter, "permalink")).toBe("m-8209b082cff8");
+});
+
+test("Memory frontmatter quotes YAML implicit scalar titles so they round-trip as strings", () => {
+  for (const title of ["true", "null", "123", "2026-07-09", "1e3", "0x10", "01", "-1", "+1", "1.5"]) {
+    const frontmatter = memoryFrontmatter(title, slugForMemoryTitle(title));
+    const slug = slugForMemoryTitle(title);
+
+    expect(frontmatter).toContain(`title: "${title}"`);
+    if (!slug.startsWith("m-")) {
+      expect(frontmatter).toContain(`permalink: "${slug}"`);
+    }
+    expect(readBasicMemoryScalar(frontmatter, "title")).toBe(title);
+    expect(readBasicMemoryScalar(frontmatter, "permalink")).toBe(slug);
+  }
+
+  expect(memoryFrontmatter("Example Memory", "example-memory")).toContain("title: Example Memory\n");
+});
+
+test("Basic Memory frontmatter parsing fails closed when required fields are missing or empty", () => {
+  const cases = [
+    `---
+type: note
+tags:
+  - research
+permalink: example
+---`,
+    `---
+title: Example
+tags:
+  - research
+permalink: example
+---`,
+    `---
+title: Example
+type: note
+tags:
+  - research
+---`,
+    `---
+title: ""
+type: note
+tags:
+  - research
+permalink: example
+---`,
+    `---
+title: Example
+type: ""
+tags:
+  - research
+permalink: example
+---`,
+    `---
+title: Example
+type: note
+tags:
+  - research
+permalink: ""
+---`,
+  ];
+
+  for (const frontmatter of cases) {
+    expect(readBasicMemoryScalar(frontmatter, "title")).toBeNull();
+    expect(readBasicMemoryScalar(frontmatter, "type")).toBeNull();
+    expect(readBasicMemoryScalar(frontmatter, "permalink")).toBeNull();
+  }
+});
+
+test("Basic Memory scalar reads fail closed when frontmatter is malformed", () => {
+  const missingPermalink = `---
+title: Example
+type: note
+tags:
+  - research
+---
+
+permalink: body-value
+`;
+
+  expect(readBasicMemoryScalar(missingPermalink, "title")).toBeNull();
+  expect(readBasicMemoryScalar(missingPermalink, "permalink")).toBeNull();
+});
+
+test("Basic Memory scalar reads are scoped to frontmatter", () => {
+  const note = `---
+title: Example
+type: note
+tags:
+  - research
+permalink: example
+superseded_by: Next Memory
+---
+
+superseded_by: Body Value
+review_after: 2026-07-09
+`;
+
+  expect(readBasicMemoryScalar(note, "title")).toBe("Example");
+  expect(readBasicMemoryScalar(note, "superseded_by")).toBe("Next Memory");
+  expect(readBasicMemoryScalar(note, "review_after")).toBeNull();
+});
+
+test("catalog entries render and parse exact natural titles", () => {
+  const title = `: "Quoted" # Hash 研究 [draft]`;
+  const rendered = indexLine("memories/m-c0de2b2e61fa.md", title, "research", "Natural punctuation survives.");
+
+  expect(rendered).toBe(`- [[memories/m-c0de2b2e61fa.md|: "Quoted" # Hash 研究 [draft]]] | category: research | summary: Natural punctuation survives.`);
+  expect(parseIndexLine(rendered)).toEqual({
+    ref: "memories/m-c0de2b2e61fa.md",
+    title,
+    category: "research",
+    summary: "Natural punctuation survives.",
+  });
+});
+
+test("ambiguous catalog titles fail validation", () => {
+  for (const title of ["", "   ", "Pipe | Title", "Closing ]] Title", "Control\u0001Title"]) {
+    expect(validateMemoryTitle(title)).toEqual({
+      ok: false,
+      message: "title contains characters that cannot be represented unambiguously in the catalog",
+    });
+  }
+});
+
+test("Unicode-only and punctuation-only titles receive deterministic collision-resistant slugs", () => {
+  expect(slugForMemoryTitle("研究")).toBe("m-4ff0f1dda80f");
+  expect(slugForMemoryTitle("!!!")).toBe("m-e84c538e7fe2");
+  expect(slugForMemoryTitle("???")).toBe("m-a03b221c6c6e");
 });
 
 test("Basic Memory contract fixtures pin real engine JSON shapes", async () => {
@@ -72,10 +239,66 @@ test("Basic Memory contract fixtures pin real engine JSON shapes", async () => {
   expect(statusTimeout.error).toContain("bm reindex --project kb-contract-spike");
 });
 
+realBasicMemoryTest("generated frontmatter round-trips through the supported Basic Memory lane", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kb-basic-memory-contract-"));
+  const home = join(root, "home");
+  const xdgConfigHome = join(root, "xdg");
+  const kbDir = join(root, "kb");
+  const memoriesDir = join(kbDir, "memories");
+  const project = `kb-format-${process.pid}-${Date.now()}`;
+  const env = {
+    ...process.env,
+    HOME: home,
+    XDG_CONFIG_HOME: xdgConfigHome,
+  };
+
+  try {
+    await mkdir(memoriesDir, { recursive: true });
+    await writeFile(join(memoriesDir, "true.md"), memoryTemplate("true", "true"));
+
+    const version = await runPinnedBasicMemory(["--version"], kbDir, env);
+    expect(version.stdout.trim()).toBe("Basic Memory version: 0.22.1");
+    await expectBasicMemoryOk(["project", "add", project, kbDir], kbDir, env);
+    await expectBasicMemoryOk(["reindex", "--project", project, "--search"], kbDir, env);
+
+    const read = await expectBasicMemoryOk(["tool", "read-note", "true", "--project", project], kbDir, env);
+    const parsed = JSON.parse(read.stdout);
+    expect(parsed.frontmatter).toMatchObject({
+      title: "true",
+      type: "note",
+      tags: ["research"],
+      permalink: "true",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function readFixture(name: string): Promise<string> {
   return readFile(join(fixturesDir, name), "utf8");
 }
 
 async function readBasicMemoryContractJson(name: string): Promise<any> {
   return JSON.parse(await readFile(join(basicMemoryContractDir, name), "utf8"));
+}
+
+async function expectBasicMemoryOk(args: string[], cwd: string, env: Record<string, string | undefined>): Promise<{ stdout: string; stderr: string }> {
+  const result = await runPinnedBasicMemory(args, cwd, env);
+  expect(result.code, result.stderr || result.stdout || args.join(" ")).toBe(0);
+  return result;
+}
+
+async function runPinnedBasicMemory(args: string[], cwd: string, env: Record<string, string | undefined>): Promise<{ code: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn(["uvx", "--from", supportedBasicMemoryPackage, "bm", ...args], {
+    cwd,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, stdout, stderr };
 }

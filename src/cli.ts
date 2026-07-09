@@ -4,7 +4,16 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, join, parse, resolve } from "node:path";
 import { BasicMemoryAdapter } from "./engine/basic-memory";
 import { KbConfigCommitError, KbConfigError, readKbConfig, serializeKbConfig, updateKbConfig, type KbConfig } from "./kb-config";
-import { INDEX_LINE_FORMAT, indexLine, memoryFormatPlaybookLines, memoryTemplate } from "./memory-format";
+import {
+  INDEX_LINE_FORMAT,
+  indexLine,
+  memoryFormatPlaybookLines,
+  memoryTemplate,
+  parseIndexLine,
+  readBasicMemoryScalar,
+  slugForMemoryTitle,
+  validateMemoryTitle,
+} from "./memory-format";
 
 const EXIT_USAGE = 64;
 const EXIT_UNAVAILABLE = 69;
@@ -932,8 +941,13 @@ async function createMemoryNote(kbName: string | null, args: string[]): Promise<
     writeError("title must be a single line");
     return EXIT_USAGE;
   }
+  const titleValidation = validateMemoryTitle(title);
+  if (!titleValidation.ok) {
+    writeError(titleValidation.message);
+    return EXIT_USAGE;
+  }
 
-  const slug = slugify(title);
+  const slug = slugForMemoryTitle(title);
   const file = `${slug}.md`;
   try {
     await writeFile(join(target.path, "memories", file), memoryTemplate(title, slug), { flag: "wx" });
@@ -1290,14 +1304,6 @@ function indexEntryLines(index: string): string[] {
   return index.split("\n").filter((line) => line.startsWith("- [[") && !line.includes("<file>"));
 }
 
-function parseIndexLine(line: string): { ref: string; title: string } | null {
-  const match = /^- \[\[([^|\]]+)\|([^\]]+)\]\]/.exec(line);
-  if (match === null) {
-    return null;
-  }
-  return { ref: match[1], title: match[2] };
-}
-
 function scoreText(text: string, terms: string[]): number {
   const lower = text.toLowerCase();
   return terms.reduce((score, term) => score + lower.split(term).length - 1, 0);
@@ -1312,7 +1318,7 @@ function firstMatchingLine(text: string, terms: string[]): string {
 }
 
 function titleFromMemory(text: string): string | null {
-  const title = readYamlScalar(text, "title");
+  const title = readBasicMemoryScalar(text, "title");
   return title === null || title.length === 0 ? null : title;
 }
 
@@ -1336,8 +1342,8 @@ async function listMemories(kbPath: string): Promise<MemoryInfo[]> {
     memories.push({
       ref,
       title: titleFromMemory(text) ?? titleFromSlug(entry.name.slice(0, -".md".length)),
-      slug: readYamlScalar(text, "permalink") ?? entry.name.slice(0, -".md".length),
-      supersededBy: readYamlScalar(text, "superseded_by"),
+      slug: readBasicMemoryScalar(text, "permalink") ?? entry.name.slice(0, -".md".length),
+      supersededBy: readBasicMemoryScalar(text, "superseded_by"),
       mtimeMs: metadata.mtimeMs,
     });
   }
@@ -1517,7 +1523,7 @@ async function wikiLintIssues(kbPath: string): Promise<WikiLintIssues> {
       }
     }
     for (const key of ["review_after", "stale_after"]) {
-      const value = readYamlScalar(text, key);
+      const value = readBasicMemoryScalar(text, key);
       if (value !== null && isPastDate(value)) {
         staleFlags.push(`${memory.ref} ${key} ${value}`);
       }
