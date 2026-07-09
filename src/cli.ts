@@ -691,7 +691,7 @@ async function scaffoldKb(kbDir: string, name: string, arm = "b0"): Promise<void
     await mkdir(kbDir);
   }
   await Promise.all([
-    writeFile(join(kbDir, "kb.yaml"), kbYaml(arm, name), { flag: "wx" }),
+    writeFile(join(kbDir, "kb.yaml"), kbYaml(arm), { flag: "wx" }),
     writeFile(join(kbDir, "AGENTS.md"), agentsMd(), { flag: "wx" }),
     writeFile(join(kbDir, "index.md"), indexMd(), { flag: "wx" }),
     writeFile(join(kbDir, "log.md"), logMd(name), { flag: "wx" }),
