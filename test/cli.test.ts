@@ -748,6 +748,23 @@ kbs:
   expect((await readdir(join(harness.xdgConfigHome, "kb"))).filter((entry) => entry.includes(".tmp"))).toEqual([]);
 });
 
+test("Registry lock recovery removes stale ownerless locks without losing entries", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  await harness.runKb(["new", "research"]);
+  const lockDir = join(harness.xdgConfigHome, "kb", ".config.yaml.lock");
+  await mkdir(lockDir);
+  await utimes(lockDir, new Date(0), new Date(0));
+
+  const result = await harness.runKb(["new", "papers"]);
+
+  expect(result.code, result.stderr).toBe(0);
+  expect(await readFile(join(harness.xdgConfigHome, "kb", "config.yaml"), "utf8")).toBe(`default: research
+kbs:
+  papers: ${join(harness.home, "kb", "papers")}
+  research: ${join(harness.home, "kb", "research")}
+`);
+});
+
 test("kb init --guide prints the non-interactive chooser", async () => {
   const result = await harness.runKb(["init", "--guide"]);
 

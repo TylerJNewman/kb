@@ -3,6 +3,7 @@ import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } fro
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, parse, resolve } from "node:path";
 import { BasicMemoryAdapter } from "./engine/basic-memory";
+import { withFileLock } from "./file-lock";
 import { KbConfigCommitError, KbConfigError, readKbConfig, serializeKbConfig, updateKbConfig, type KbConfig } from "./kb-config";
 import {
   INDEX_LINE_FORMAT,
@@ -71,13 +72,9 @@ export async function main(argv: string[]): Promise<number> {
       writeError(error.message);
       return EXIT_UNAVAILABLE;
     }
-    if (error instanceof RegistryError) {
-      writeError(`invalid Registry: ${error.message}`);
-      return EXIT_USAGE;
-    }
-    if (error instanceof RegistryCommitError) {
-      writeError(error.message);
-      return EXIT_UNAVAILABLE;
+    const registryExit = handleRegistryError(error);
+    if (registryExit !== null) {
+      return registryExit;
     }
     throw error;
   }
@@ -697,17 +694,9 @@ ${becameDefault ? `Default: ${name}\n` : ""}Next: kb add <file-or-url>
       writeError(`KB already exists: ${kbDir}`);
       return EXIT_USAGE;
     }
-    if (error instanceof RegistryConflictError) {
-      writeError(error.message);
-      return EXIT_USAGE;
-    }
-    if (error instanceof RegistryError) {
-      writeError(`invalid Registry: ${error.message}`);
-      return EXIT_USAGE;
-    }
-    if (error instanceof RegistryCommitError) {
-      writeError(error.message);
-      return EXIT_UNAVAILABLE;
+    const registryExit = handleRegistryError(error);
+    if (registryExit !== null) {
+      return registryExit;
     }
     writeError(error instanceof Error ? error.message : String(error));
     return EXIT_UNAVAILABLE;
@@ -750,17 +739,9 @@ Next: kb add <file-or-url>
       writeError(`KB already exists: ${cwd}`);
       return EXIT_USAGE;
     }
-    if (error instanceof RegistryConflictError) {
-      writeError(error.message);
-      return EXIT_USAGE;
-    }
-    if (error instanceof RegistryError) {
-      writeError(`invalid Registry: ${error.message}`);
-      return EXIT_USAGE;
-    }
-    if (error instanceof RegistryCommitError) {
-      writeError(error.message);
-      return EXIT_UNAVAILABLE;
+    const registryExit = handleRegistryError(error);
+    if (registryExit !== null) {
+      return registryExit;
     }
     writeError(error instanceof Error ? error.message : String(error));
     return EXIT_UNAVAILABLE;
@@ -1735,6 +1716,22 @@ class RegistryCommitError extends Error {
   }
 }
 
+function handleRegistryError(error: unknown): number | null {
+  if (error instanceof RegistryConflictError) {
+    writeError(error.message);
+    return EXIT_USAGE;
+  }
+  if (error instanceof RegistryError) {
+    writeError(`invalid Registry: ${error.message}`);
+    return EXIT_USAGE;
+  }
+  if (error instanceof RegistryCommitError) {
+    writeError(error.message);
+    return EXIT_UNAVAILABLE;
+  }
+  return null;
+}
+
 function sortedRegistryEntries(registry: Registry): [string, string][] {
   return [...registry.kbs.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
@@ -1903,59 +1900,21 @@ async function writeRegistryAtomically(registry: Registry): Promise<void> {
 
 async function withRegistryLock<T>(action: () => Promise<T>): Promise<T> {
   const lockPath = join(dirname(registryPath()), ".config.yaml.lock");
-  const deadline = Date.now() + 2_000;
   await mkdir(dirname(registryPath()), { recursive: true });
 
-  while (true) {
-    try {
-      await mkdir(lockPath);
-      try {
-        await writeFile(join(lockPath, "owner"), JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
-      } catch (error) {
-        await rm(lockPath, { recursive: true, force: true });
-        throw new RegistryCommitError(`Registry lock owner write failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      break;
-    } catch (error) {
-      if (error instanceof RegistryCommitError) {
-        throw error;
-      }
-      if (!isNodeError(error) || error.code !== "EEXIST") {
-        throw new RegistryCommitError("Registry lock acquisition failed");
-      }
-      await recoverStaleRegistryLock(lockPath);
-      if (Date.now() >= deadline) {
-        throw new RegistryCommitError("Registry lock acquisition timed out");
-      }
-      await Bun.sleep(25);
-    }
-  }
-
-  try {
-    return await action();
-  } finally {
-    await rm(lockPath, { recursive: true, force: true });
-  }
-}
-
-async function recoverStaleRegistryLock(lockPath: string): Promise<void> {
-  let owner: { pid?: unknown; createdAt?: unknown } = {};
-  try {
-    owner = JSON.parse(await readFile(join(lockPath, "owner"), "utf8")) as { pid?: unknown; createdAt?: unknown };
-  } catch {
-    return;
-  }
-
-  if (typeof owner.pid !== "number" || typeof owner.createdAt !== "number") {
-    return;
-  }
-  if (Date.now() - owner.createdAt < 10_000) {
-    return;
-  }
-  if (isPidAlive(owner.pid)) {
-    return;
-  }
-  await rm(lockPath, { recursive: true, force: true });
+  return withFileLock(
+    {
+      lockPath,
+      label: "Registry",
+      createError: (message) => new RegistryCommitError(message),
+      beforeOwnerWrite: () => {
+        if (process.env.KB_FAIL_REGISTRY_LOCK === "after-mkdir") {
+          throw new Error("injected owner write failure");
+        }
+      },
+    },
+    action,
+  );
 }
 
 async function scanKbHome(): Promise<Registry> {
@@ -2027,15 +1986,6 @@ async function runSilent(cmd: string, args: string[], cwd: string): Promise<numb
     return await proc.exited;
   } catch {
     return 127;
-  }
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isNodeError(error) && error.code === "EPERM";
   }
 }
 
