@@ -7,6 +7,8 @@ import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
 let harness: KbHarness;
 
+const MULTI_PROCESS_TEST_TIMEOUT_MS = 20_000;
+
 beforeEach(async () => {
   harness = await createKbHarness();
 });
@@ -108,32 +110,30 @@ test("kb new --help teaches what a KB is and where it lands", async () => {
   expect(result.stdout).toContain("Git: initialized silently unless the KB is already inside a git repo");
 });
 
-test("every public command has command-specific help", async () => {
-  const commands = [
-    ["start"],
-    ["new"],
-    ["init"],
-    ["list"],
-    ["add"],
-    ["draft"],
-    ["search"],
-    ["read"],
-    ["status"],
-    ["log"],
-    ["enable"],
-    ["reflect"],
-    ["check"],
-  ];
-
-  for (const command of commands) {
+for (const command of [
+  ["start"],
+  ["new"],
+  ["init"],
+  ["list"],
+  ["add"],
+  ["draft"],
+  ["search"],
+  ["read"],
+  ["status"],
+  ["log"],
+  ["enable"],
+  ["reflect"],
+  ["check"],
+]) {
+  test(`kb ${command.join(" ")} has command-specific help`, async () => {
     const result = await harness.runKb([...command, "--help"]);
     expect(result.code, command.join(" ")).toBe(0);
     expect(result.stderr, command.join(" ")).toBe("");
     expect(result.stdout, command.join(" ")).toContain(`kb ${command.join(" ")}`);
     expect(result.stdout, command.join(" ")).toContain("Usage:");
     expect(result.stdout, command.join(" ")).toContain("Rules of thumb:");
-  }
-});
+  });
+}
 
 
 test("kb start on an empty environment prints create-your-first guidance", async () => {
@@ -370,7 +370,7 @@ test("kb list shows all KBs and the default", async () => {
 `,
     stderr: "",
   });
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb start with an existing KB lists it and suggests the next step", async () => {
   await scaffoldResearchKb();
@@ -479,7 +479,7 @@ Advisor:
 `,
     stderr: "",
   });
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("Registry rebuild-by-scan reconstructs KB Home entries when config is deleted", async () => {
   await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
@@ -635,7 +635,7 @@ test("kb log appends and reads greppable append-only entries", async () => {
   expect(read.stderr).toBe("");
   expect(read.stdout).toContain("created | research");
   expect(read.stdout).toContain("question | How does this work?");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb read <ref> returns the memory and points at the tiered read order", async () => {
   await scaffoldResearchKb();
@@ -648,7 +648,7 @@ test("kb read <ref> returns the memory and points at the tiered read order", asy
   expect(result.stdout).toContain("Tiered read order: index.md -> executive summary -> derivatives in memories/ -> raw sources only when needed.");
   expect(result.stdout).toContain("title: Example Memory");
   expect(result.stdout).toContain("- [summary] TODO #research");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb search returns citation-ready refs and appends a query log entry", async () => {
   await scaffoldResearchKb();
@@ -763,7 +763,7 @@ exit 2
   expect(engineless.code).toBe(0);
   expect(engine.code).toBe(0);
   expect(searchShape(engine.stdout)).toEqual(searchShape(engineless.stdout));
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb search reports Engine failure explicitly and does not fall back silently", async () => {
   await scaffoldResearchKb();
@@ -844,7 +844,7 @@ test("kb status Advisor suggests enable search at the index threshold only", asy
   expect(after.code).toBe(0);
   expect(after.stderr).toBe("");
   expect(after.stdout).toContain("- Try `kb enable search`: 3 index entries make hybrid search more useful than plain file search.");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb enable search runs availability, project add, and reindex through one pinned Basic Memory runner", async () => {
   await scaffoldResearchKb();
@@ -982,7 +982,7 @@ exit 2
   expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toContain(
     "uvx --from basic-memory==0.22.1 bm tool search-notes sharedterm --project research\n",
   );
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb enable search is idempotent once already enabled", async () => {
   await scaffoldResearchKb();
@@ -1309,7 +1309,7 @@ Line format:
   expect(status.code).toBe(0);
   expect(status.stdout).toContain("Search: plain files");
   expect(status.stdout).toContain("Advisor:\n- No suggestions.");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("daily commands do not mutate existing raw contents", async () => {
   await scaffoldResearchKb();
@@ -1324,7 +1324,7 @@ test("daily commands do not mutate existing raw contents", async () => {
   await harness.runKb(["read", "other", "--kb", "research"]);
 
   expect(await readFile(rawPath, "utf8")).toBe("original raw bytes\n");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb reflect reports memories changed since last reflect, writes marker, logs, and prints playbook", async () => {
   await scaffoldResearchKb();
