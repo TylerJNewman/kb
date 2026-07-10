@@ -1737,17 +1737,23 @@ async function resolveTargetKb(kbName: string | null): Promise<{ name: string; p
   const registry = await loadRegistry();
   if (kbName !== null) {
     const path = registry.kbs.get(kbName);
-    return path === undefined ? null : { name: kbName, path };
+    if (path === undefined) {
+      return null;
+    }
+    await readKbConfig(path);
+    return { name: kbName, path };
   }
 
   const cwdKb = await findContainingKb(process.cwd());
   if (cwdKb !== null) {
+    await readKbConfig(cwdKb.path);
     return cwdKb;
   }
 
   if (registry.defaultKb !== null) {
     const path = registry.kbs.get(registry.defaultKb);
     if (path !== undefined) {
+      await readKbConfig(path);
       return { name: registry.defaultKb, path };
     }
   }

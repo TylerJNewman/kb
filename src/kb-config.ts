@@ -51,6 +51,7 @@ lastReflectAt: ${validated.lastReflectAt ?? "null"}
 
 function parseKbConfig(text: string): KbConfig {
   const entries = parseConfigEntries(text);
+  validateConfigEntryShapes(entries);
   requireUniqueMapping(entries, ["engine"]);
   requireUniqueMapping(entries, ["engine", "basicMemory"]);
 
@@ -112,6 +113,31 @@ type ConfigEntry = {
   path: string[];
   value: string | null;
 };
+
+const CONFIG_SCHEMA = new Map<string, "mapping" | "scalar">([
+  ["schemaVersion", "scalar"],
+  ["formatVersion", "scalar"],
+  ["arm", "scalar"],
+  ["engine", "mapping"],
+  ["engine.basicMemory", "mapping"],
+  ["engine.basicMemory.state", "scalar"],
+  ["engine.basicMemory.project", "scalar"],
+  ["lastReflectAt", "scalar"],
+]);
+
+function validateConfigEntryShapes(entries: ConfigEntry[]): void {
+  for (const entry of entries) {
+    const path = entry.path.join(".");
+    const expected = CONFIG_SCHEMA.get(path);
+    if (expected === undefined) {
+      throw new KbConfigError(`unknown configuration field: ${path}`);
+    }
+    const actual = entry.value === null ? "mapping" : "scalar";
+    if (actual !== expected) {
+      throw new KbConfigError(`expected ${expected}: ${path}`);
+    }
+  }
+}
 
 function parseConfigEntries(text: string): ConfigEntry[] {
   const entries: ConfigEntry[] = [];
