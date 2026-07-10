@@ -1507,6 +1507,76 @@ exit 2
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
 });
 
+test("kb enable search fails closed when Basic Memory project state is JSON null", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListResponseShell("null")}
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
+if [ "$1" = "reindex" ]; then exit 9; fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: Basic Memory project list JSON did not include projects.\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+});
+
+test("kb enable search retries registration followed by reindex failure without re-registering", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: kbDir }]),
+])}
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 0; fi
+if [ "$1" = "reindex" ]; then
+  if [ ! -f "$HOME/reindex-failed-once" ]; then
+    : > "$HOME/reindex-failed-once"
+    echo "reindex failed" >&2
+    exit 1
+  fi
+  exit 0
+fi
+exit 2
+`),
+  );
+
+  const first = await harness.runKb(["enable", "search", "--kb", "research"]);
+  expect(first).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: Basic Memory reindex failed. reindex failed\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+
+  const retry = await harness.runKb(["enable", "search", "--kb", "research"]);
+  expect(retry).toEqual({
+    code: 0,
+    stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n",
+    stderr: "",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b1\n");
+  const calls = await readFile(join(harness.home, "engine-calls"), "utf8");
+  expect(calls.match(/ bm project add research /g)).toHaveLength(1);
+  expect(calls.match(/ bm reindex --project research --search/g)).toHaveLength(2);
+});
+
 test("kb enable search recovers from a registration race by accepting a same-path winner", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");

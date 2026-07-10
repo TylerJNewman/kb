@@ -26,10 +26,6 @@ type BasicMemoryProject = {
   localPath: string;
 };
 
-type BasicMemoryProjectListResponse = {
-  projects?: unknown;
-};
-
 export const SUPPORTED_BASIC_MEMORY_PACKAGE = "basic-memory==0.22.1";
 
 export function buildBasicMemoryCommand(args: string[]): string[] {
@@ -63,23 +59,14 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
     }
     if (!projectState.value.exists) {
       const added = await runBasicMemory(["project", "add", projectName, kbPath], kbPath);
-      let registeredProjectState: EngineResult<{ exists: boolean }>;
-      if (added.code !== 0) {
-        registeredProjectState = await verifyProjectRegistration(kbPath, projectName);
-        if (!registeredProjectState.ok) {
-          return registeredProjectState;
-        }
-        if (!registeredProjectState.value.exists) {
-          return { ok: false, message: `Basic Memory project add failed. ${firstOutputLine(added)}` };
-        }
-      } else {
-        registeredProjectState = await verifyProjectRegistration(kbPath, projectName);
-      }
+      const registeredProjectState = await verifyProjectRegistration(kbPath, projectName);
       if (!registeredProjectState.ok) {
         return registeredProjectState;
       }
       if (!registeredProjectState.value.exists) {
-        return { ok: false, message: "Basic Memory project add did not register the project." };
+        return added.code === 0
+          ? { ok: false, message: "Basic Memory project add did not register the project." }
+          : { ok: false, message: `Basic Memory project add failed. ${firstOutputLine(added)}` };
       }
     }
 
@@ -136,13 +123,13 @@ async function verifyProjectRegistration(kbPath: string, projectName: string): P
     return { ok: false, message: `Basic Memory project list failed. ${firstOutputLine(listed)}` };
   }
 
-  let parsed: BasicMemoryProjectListResponse;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(listed.stdout) as BasicMemoryProjectListResponse;
+    parsed = JSON.parse(listed.stdout) as unknown;
   } catch {
     return { ok: false, message: "Basic Memory project list returned non-JSON output." };
   }
-  if (!Array.isArray(parsed.projects)) {
+  if (parsed === null || typeof parsed !== "object" || !("projects" in parsed) || !Array.isArray(parsed.projects)) {
     return { ok: false, message: "Basic Memory project list JSON did not include projects." };
   }
 
