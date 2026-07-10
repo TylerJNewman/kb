@@ -52,8 +52,8 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
     if (uvx.timedOut) {
       return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.uvxAvailability, uvx) };
     }
-    if (uvx.code === 127) {
-      return { ok: false, message: "uvx is not on PATH. Install uv, then rerun `kb enable search`." };
+    if (uvx.missingDependency) {
+      return { ok: false, message: "uvx availability failed. uvx is not on PATH. Install uv, then rerun `kb enable search`." };
     }
     if (uvx.code !== 0) {
       return { ok: false, message: `uvx availability failed. ${firstOutputLine(uvx)}` };
@@ -103,19 +103,22 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
       return { ok: false, message: timeoutMessage(ENGINE_OPERATIONS.search, run) };
     }
     if (run.missingDependency) {
-      return { ok: false, message: "uvx is not on PATH. Install uv, then rerun this command." };
+      return { ok: false, message: "Basic Memory search failed. uvx is not on PATH. Install uv, then rerun this command." };
     }
     if (run.code !== 0) {
       return { ok: false, message: `Basic Memory search failed. ${firstOutputLine(run)}` };
     }
 
-    let parsed: BasicMemorySearchResponse;
+    let parsed: unknown;
     try {
-      parsed = JSON.parse(run.stdout) as BasicMemorySearchResponse;
+      parsed = JSON.parse(run.stdout);
     } catch {
       return { ok: false, message: "Basic Memory search returned non-JSON output." };
     }
 
+    if (!isBasicMemorySearchResponse(parsed)) {
+      return { ok: false, message: "Basic Memory search returned malformed JSON." };
+    }
     if (parsed.error !== undefined) {
       return { ok: false, message: `Basic Memory search returned an error. ${String(parsed.error)}` };
     }
@@ -142,18 +145,24 @@ async function runBasicMemory(args: string[], cwd: string, operation: EngineOper
 async function runExternal(cmd: string, args: string[], cwd: string, operation: EngineOperation): Promise<ExternalRun> {
   const timeoutMs = engineTimeoutMs(operation);
   let timedOut = false;
-  let killWithSigkill: ReturnType<typeof setTimeout> | null = null;
+  let escalation: Promise<void> | null = null;
   try {
     const proc = Bun.spawn([cmd, ...args], {
       cwd,
+      detached: true,
       stdout: "pipe",
       stderr: "pipe",
     });
     const timeout = setTimeout(() => {
       timedOut = true;
-      killProcessTree(proc.pid, "SIGTERM");
-      killWithSigkill = setTimeout(() => killProcessTree(proc.pid, "SIGKILL"), 100);
-      killWithSigkill.unref?.();
+      killProcessGroup(proc.pid, "SIGTERM");
+      escalation = new Promise((resolve) => {
+        const killWithSigkill = setTimeout(() => {
+          killProcessGroup(proc.pid, "SIGKILL");
+          resolve();
+        }, 100);
+        killWithSigkill.unref?.();
+      });
     }, timeoutMs);
     timeout.unref?.();
     const [stdout, stderr, code] = await Promise.all([
@@ -162,8 +171,8 @@ async function runExternal(cmd: string, args: string[], cwd: string, operation: 
       proc.exited,
     ]);
     clearTimeout(timeout);
-    if (killWithSigkill !== null) {
-      clearTimeout(killWithSigkill);
+    if (escalation !== null) {
+      await escalation;
     }
     return { code, stdout, stderr, timedOut, timeoutMs, missingDependency: false };
   } catch (error) {
@@ -174,21 +183,11 @@ async function runExternal(cmd: string, args: string[], cwd: string, operation: 
   }
 }
 
-function killProcessTree(pid: number, signal: NodeJS.Signals): void {
-  const quotedSignal = signal.replace(/[^A-Z0-9]/g, "");
-  Bun.spawnSync([
-    "/bin/sh",
-    "-c",
-    `kill_tree() {
-  for child in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do
-    kill_tree "$child"
-  done
-  /bin/kill -${quotedSignal} "$1" 2>/dev/null || true
-}
-kill_tree "$1"`,
-    "kill-tree",
-    String(pid),
-  ]);
+function killProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  Bun.spawnSync(["/bin/kill", `-${signal}`, "--", `-${pid}`], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
 }
 
 function engineTimeoutMs(operation: EngineOperation): number {
@@ -217,6 +216,10 @@ function firstOutputLineOrNull(run: ExternalRun): string | null {
 
 function isSignalNoise(line: string): boolean {
   return /\b(Terminated|Killed):?\s*\d*\b/.test(line);
+}
+
+function isBasicMemorySearchResponse(value: unknown): value is BasicMemorySearchResponse {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeBasicMemoryResult(value: unknown): EngineSearchResult | null {

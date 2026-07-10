@@ -800,7 +800,7 @@ test("kb search distinguishes missing uvx without fallback or query logging", as
   expect(result).toEqual({
     code: 69,
     stdout: "",
-    stderr: "kb: search engine failed; engineless fallback was not used. uvx is not on PATH. Install uv, then rerun this command.\n",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search failed. uvx is not on PATH. Install uv, then rerun this command.\n",
   });
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
 });
@@ -827,6 +827,32 @@ exit 2
     code: 69,
     stdout: "",
     stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search returned non-JSON output.\n",
+  });
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
+});
+
+test("kb search distinguishes a malformed Engine JSON value without fallback or query logging", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    `#!/bin/sh
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
+  echo null
+  exit 0
+fi
+exit 2
+`,
+  );
+
+  const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search returned malformed JSON.\n",
   });
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
 });
@@ -1215,7 +1241,7 @@ test("kb enable search fails clearly without uvx and leaves the KB in B0", async
   expect(result).toEqual({
     code: 69,
     stdout: "",
-    stderr: "kb: cannot enable search: uvx is not on PATH. Install uv, then rerun `kb enable search`.\n",
+    stderr: "kb: cannot enable search: uvx availability failed. uvx is not on PATH. Install uv, then rerun `kb enable search`.\n",
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(`schemaVersion: 1
 formatVersion: basic-memory-note-v1
@@ -1248,6 +1274,25 @@ test("kb enable search reports uvx availability failure and leaves the KB in B0"
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+  expect(await contentHashes(kbDir)).toEqual(beforeHashes);
+});
+
+test("kb enable search distinguishes an uvx exit 127 from a missing executable", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeHashes = await contentHashes(kbDir);
+  await harness.writeFakeExecutable(
+    "uvx",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'uvx command failed' >&2; exit 127; fi\nexit 2\n",
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: uvx availability failed. uvx command failed\n",
+  });
   expect(await contentHashes(kbDir)).toEqual(beforeHashes);
 });
 
@@ -1304,7 +1349,8 @@ if [ "$1" = "--version" ]; then exit 0; fi
 if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then shift 3; fi
 if [ "$1" = "--version" ]; then exit 0; fi
 if [ "$1" = "project" ]; then
-  /bin/sh -c '/bin/sleep 60' &
+  echo 'project registration is still running' >&2
+  /bin/sh -c 'trap "" TERM; /bin/sleep 60' &
   echo "$!" > "$HOME/engine-child-pid"
   wait
 fi
@@ -1319,7 +1365,7 @@ exit 2
   expect(result).toEqual({
     code: 69,
     stdout: "",
-    stderr: "kb: cannot enable search: Basic Memory project add timed out after 100ms.\n",
+    stderr: "kb: cannot enable search: Basic Memory project add timed out after 100ms. project registration is still running\n",
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
