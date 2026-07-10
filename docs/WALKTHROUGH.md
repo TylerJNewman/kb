@@ -45,7 +45,7 @@ Plain-language, ASCII, copy-paste. The basics in five minutes.
 
 All plain text. Opens in Obsidian. Lives in git. Delete `kb` tomorrow — you still have everything.
 
-For a beginner, do **not** open a random folder first. Run `kb new research` from anywhere; it creates `~/kb/research/` and records it in `~/.config/kb/config.yaml`. Use `kb init` only when you want to turn the current directory into a KB.
+For a beginner, do **not** open a random folder first. Run `kb new research` from anywhere; it creates `~/kb/research/` and records it in `~/.config/kb/config.yaml`. **Research is just an example name**: use any simple name you want, such as `books` or `client-notes`, and replace `research` in the later commands and paths. Use `kb init` only when you want to turn the current directory into a KB.
 
 ---
 

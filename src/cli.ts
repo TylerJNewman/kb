@@ -582,6 +582,8 @@ Prerequisite: Git must be on PATH because kb new initializes a git repository.
 
 1. Create your first KB.
    kb new research
+   Research is just an example name; choose any simple name you want.
+   If you choose another name, replace research in later --in commands and paths.
 
 2. Create and stage one harmless source. kb files it, then prints an Add playbook.
    sample_dir="$(mktemp -d)"

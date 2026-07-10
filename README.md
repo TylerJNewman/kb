@@ -29,7 +29,7 @@ printf '%s\n' 'Vector search helps with fuzzy recall.' > "$sample_dir/hello.txt"
 kb add "$sample_dir/hello.txt" --in research
 ```
 
-`kb new research` creates `~/kb/research/`, makes it your default KB, and records it in `~/.config/kb/config.yaml`. `kb add` accepts an existing relative or absolute source path, leaves the original alone, copies it into `raw/`, creates a pending handoff, and prints an Add playbook. `--in research` keeps the tutorial pointed at this KB even if your terminal is inside another one.
+`kb new research` creates `~/kb/research/`, makes it your default KB, and records it in `~/.config/kb/config.yaml`. **Research is just an example name**: choose any simple KB name, such as `books` or `client-notes`, and substitute it in the later `--in` commands and paths. `kb add` accepts an existing relative or absolute source path, leaves the original alone, copies it into `raw/`, creates a pending handoff, and prints an Add playbook. `--in research` keeps the tutorial pointed at this KB even if your terminal is inside another one.
 
 Stop here and send your AI agent this handoff message:
 

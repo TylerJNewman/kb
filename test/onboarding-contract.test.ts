@@ -118,3 +118,9 @@ test("onboarding exposes safe recovery without making kb new idempotent", async 
     expect(content, path).toContain("register the repaired scaffold");
   }
 });
+
+test("beginner guidance calls research an example KB name", async () => {
+  for (const path of [...beginnerSurfaces, "src/cli.ts"]) {
+    expect((await text(path)).toLowerCase(), path).toContain("research is just an example name");
+  }
+});

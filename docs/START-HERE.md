@@ -43,7 +43,7 @@ Run one command, get a folder of plain markdown:
 
 All plain text. Opens in Obsidian. Lives in git. No database, no lock-in. You could delete `kb` tomorrow and still have everything.
 
-For a beginner, do **not** open a random folder and initialize it. Run `kb new research` from anywhere. It creates `~/kb/research/`, makes the first KB your default, and records it in `~/.config/kb/config.yaml`.
+For a beginner, do **not** open a random folder and initialize it. Run `kb new research` from anywhere. It creates `~/kb/research/`, makes the first KB your default, and records it in `~/.config/kb/config.yaml`. **Research is just an example name**: use any simple name you want, such as `books` or `client-notes`, and replace `research` in the later commands and paths.
 
 `kb init` is the advanced alternative: it turns the current directory into a KB when that is specifically what you want.
 
