@@ -2088,6 +2088,12 @@ async function loadAddById(kbPath: string, handoffId: string): Promise<LoadedAdd
   const pending = pendingValue === null ? null : parsePendingAddV2(pendingValue, stateRef(kbPath, pendingPath));
   const completed = completedValue === null ? null : parseCompletedAddV2(completedValue, stateRef(kbPath, completedPath));
   if (pending === null && completed === null) return null;
+  if (pending !== null) {
+    await validateReceiptAgainstIngressLog(kbPath, pending, stateRef(kbPath, pendingPath));
+  }
+  if (completed !== null) {
+    await validateReceiptAgainstIngressLog(kbPath, { ...completed, state: "pending" }, stateRef(kbPath, completedPath));
+  }
   if (completed !== null) {
     if (pending !== null && !pendingReceiptsMatch(pending, { ...completed, state: "pending" })) {
       throw malformedState(stateRef(kbPath, completedPath));
@@ -2258,6 +2264,20 @@ function pendingReceiptsMatch(left: PendingAddV2, right: PendingAddV2): boolean 
     && left.title === right.title
     && left.urlReference === right.urlReference
     && left.arm === right.arm;
+}
+
+async function validateReceiptAgainstIngressLog(
+  kbPath: string,
+  record: PendingAddV2,
+  path: string,
+): Promise<void> {
+  const logged = await readIngressLogEvent(kbPath, record.handoffId);
+  if (logged === null) return;
+  if (logged.rawRef !== record.rawRef || logged.rawSha256 !== record.rawSha256
+    || logged.source !== record.source.name || logged.sourceId !== record.source.id
+    || logged.capturedAt !== record.source.capturedAt || logged.ingestedAt !== record.createdAt) {
+    throw malformedState(path);
+  }
 }
 
 function isNullableString(value: unknown): value is string | null {

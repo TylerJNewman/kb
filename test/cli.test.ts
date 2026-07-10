@@ -927,6 +927,8 @@ test("kb add fails closed on semantically corrupted pending and completed receip
     { ...original, rawRef: "raw/../escape.md" },
     { ...original, source: { name: "screenpipe", id: null, capturedAt: null } },
     { ...original, createdAt: "2026-02-31T13:00:00.000Z" },
+    { ...original, createdAt: "2026-07-11T00:00:00.000Z" },
+    { ...original, source: { ...original.source, capturedAt: "2026-07-11T00:00:00.000Z" } },
   ];
 
   for (const corrupted of corruptions) {
