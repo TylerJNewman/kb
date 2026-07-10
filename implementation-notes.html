@@ -106,7 +106,7 @@
 <body>
 <main>
   <p class="eyebrow">Implementation report · 2026-07-10</p>
-  <span class="status">Implementation in progress · final receipts pending</span>
+  <span class="status">Implemented · verified · review fixes applied</span>
   <h1>Safe ingestion is a protocol, not a folder.</h1>
   <p class="lede">This change turns <code>kb add</code> into a durable handoff for machine producers such as Screenpipe. KB records bytes, identity, provenance, and state. An agent still makes the semantic decision about what belongs in durable Memory.</p>
 
@@ -128,7 +128,7 @@
       <div class="card"><span class="metric">2 outcomes</span><strong>Derived or raw-only</strong><p class="muted">A handoff completes with one or more cited Memories, or an explicit reason why no Memory was warranted.</p></div>
       <div class="card"><span class="metric">0 semantic guesses</span><strong>KB verifies; the agent decides</strong><p class="muted">KB never claims to detect truth, ontology, contradictions, or semantic duplicates.</p></div>
     </div>
-    <p>The first implementation slice is Ticket 1 from <code>docs/SPEC-MACHINE-SAFE-INGESTION.md</code>: machine-safe Add handoff v2. Read-only schema wrappers belong to Ticket 2 and only become useful after agents have produced a deliberately typed corpus.</p>
+    <p>The implementation covers the required slices from <code>docs/SPEC-MACHINE-SAFE-INGESTION.md</code>: machine-safe Add handoff v2, the persistent Basic Memory 0.22.1 Engine runner, public read-only schema inference/validation/diff, and dirty-index recovery after a durable B1 completion.</p>
   </section>
 
   <section id="context" aria-labelledby="context-title">
@@ -215,17 +215,18 @@ kb add --complete add-a1b2c3d4e5f60718293a4b5c \
   </section>
 
   <section id="change-map" aria-labelledby="change-map-title">
-    <h2 id="change-map-title">Expected change map</h2>
-    <p>This map explains responsibility boundaries. The integration owner should replace pending labels with exact final line/file receipts after all implementation lanes are merged.</p>
+    <h2 id="change-map-title">Implemented change map</h2>
+    <p>This map names the concrete files and seams that now own each responsibility.</p>
     <table>
       <thead><tr><th>Area</th><th>Expected responsibility</th><th>Final receipt</th></tr></thead>
       <tbody>
-        <tr><td><code>src/cli.ts</code></td><td>Parse stage/resume/complete forms; validate flags; choose text or JSON channels; preserve legacy forms; coordinate locks and state transitions.</td><td class="pending">[FINALIZE: exact symbols/lines]</td></tr>
-        <tr><td>Add handoff/state helpers</td><td>Canonical identity, full hashes, atomic pending/completed records, replay comparison, raw tamper checks, and legacy metadata decoding.</td><td class="pending">[FINALIZE: exact file(s)]</td></tr>
-        <tr><td>Memory/index verification</td><td>Normalize refs; enforce <code>memories/</code> containment, <code>source_refs</code>, non-TODO content, and exactly one catalog entry.</td><td class="pending">[FINALIZE: exact symbols/lines]</td></tr>
-        <tr><td>Logging and status</td><td>Append one ingress event per handoff, expose the stable handoff ID, and print the exact resume command without replay duplication.</td><td class="pending">[FINALIZE: exact symbols/lines]</td></tr>
-        <tr><td><code>test/cli.test.ts</code> and focused tests</td><td>Pin the public CLI contract: JSON shape/channels, exit codes, replay, collision, completion outcomes, compatibility, and no-ANSI text.</td><td class="pending">[FINALIZE: test names/counts]</td></tr>
-        <tr><td><code>test/resilience.test.ts</code> and concurrency tests</td><td>Prove atomic recovery, convergence under identical calls, tamper failure, and preservation of completed Markdown when engine refresh fails.</td><td class="pending">[FINALIZE: test names/counts]</td></tr>
+        <tr><td><code>src/cli.ts</code></td><td>Parse stage/resume/complete and schema forms; validate flags; keep JSON channels pure; preserve legacy forms; coordinate locks and state transitions.</td><td class="good"><code>addKb</code>, <code>schemaKb</code>, <code>finishCompletedAddResponse</code></td></tr>
+        <tr><td>Add handoff/state helpers in <code>src/cli.ts</code></td><td>Canonical identity, full hashes, atomic pending/completed records, replay comparison, raw tamper checks, and legacy metadata decoding.</td><td class="good"><code>addIdentitySha256</code>, <code>writeJsonAtomic</code>, <code>loadAddHandoff</code></td></tr>
+        <tr><td>Memory/index verification in <code>src/cli.ts</code></td><td>Normalize refs; enforce canonical frontmatter, <code>memories/</code> containment, <code>source_refs</code>, non-TODO content, and exactly one catalog entry.</td><td class="good"><code>verifyDerivativeCompletion</code>, <code>renderPendingAddPlaybook</code></td></tr>
+        <tr><td>Engine adapter</td><td>Choose exact ambient 0.22.1 or pinned <code>uvx</code>; bound process groups; normalize project, search, and schema JSON.</td><td class="good"><code>src/engine/basic-memory.ts</code>, <code>src/engine/types.ts</code></td></tr>
+        <tr><td>Logging, recovery, and status</td><td>Append one event per handoff, expose stable IDs without treating filename hints as semantic routes, and repair <code>.kb/engine-dirty</code>.</td><td class="good"><code>inspectHandoffs</code>, <code>renderUnfinishedWork</code>, <code>searchKb</code></td></tr>
+        <tr><td>Public contract tests</td><td>Pin JSON shape/channels, exit codes, replay, collision, RFC3339 dates, completion outcomes, status, schema behavior, and compatibility.</td><td class="good"><code>test/cli.test.ts</code>, <code>test/schema-cli.test.ts</code></td></tr>
+        <tr><td>Engine and resilience tests</td><td>Prove process-tree bounds, fixture normalization, atomic recovery, concurrency convergence, tamper failure, and durable completion across refresh failure.</td><td class="good"><code>test/engine-basic-memory.test.ts</code>, <code>test/resilience.test.ts</code></td></tr>
         <tr><td><code>implementation-notes.html</code></td><td>This self-contained context, architecture explanation, verification ledger, deviations log, and pass-required quiz.</td><td class="good">Present</td></tr>
       </tbody>
     </table>
@@ -245,25 +246,26 @@ kb add --complete add-a1b2c3d4e5f60718293a4b5c \
 
   <section id="verification" aria-labelledby="verification-title">
     <h2 id="verification-title">Verification ledger</h2>
-    <p class="pending">This section is intentionally honest: implementation work is still converging. Replace every bracketed item with an exact command and observed result before declaring the overall goal complete.</p>
+    <p class="good">Every required path has executable evidence. Tests exercise the public CLI subprocess seam; Engine-only tests use the explicitly forced subprocess seam for runner and process-tree behavior.</p>
     <div class="grid">
-      <div class="card placeholder"><h3>Focused Add contract</h3><p><code>[FINALIZE: command]</code></p><p><strong>[FINALIZE: passed/failed count]</strong></p></div>
-      <div class="card placeholder"><h3>Concurrency and recovery</h3><p><code>[FINALIZE: command]</code></p><p><strong>[FINALIZE: convergence/recovery evidence]</strong></p></div>
-      <div class="card placeholder"><h3>Full suite</h3><p><code>bun test</code></p><p><strong>[FINALIZE: passed/failed/assertion count]</strong></p></div>
-      <div class="card placeholder"><h3>Type/static checks</h3><p><code>[FINALIZE: repository command]</code></p><p><strong>[FINALIZE: observed result]</strong></p></div>
-      <div class="card placeholder"><h3>Real CLI smoke</h3><p><code>[FINALIZE: isolated-home stage → resume → complete commands]</code></p><p><strong>[FINALIZE: receipts and filesystem evidence]</strong></p></div>
-      <div class="card placeholder"><h3>Diff hygiene</h3><p><code>git diff --check</code></p><p><strong>[FINALIZE: observed result and scoped file list]</strong></p></div>
+      <div class="card receipt"><h3>High-risk contracts</h3><p><code>bun test test/cli.test.ts test/resilience.test.ts test/schema-cli.test.ts test/engine-basic-memory.test.ts --timeout 60000</code></p><p><strong>98 passed, 0 failed across the four ingestion/Engine files.</strong></p></div>
+      <div class="card receipt"><h3>Full suite</h3><p><code>bun test --timeout 60000</code></p><p><strong>113 passed, 0 failed, 693 assertions across 8 files.</strong></p></div>
+      <div class="card receipt"><h3>Type/static checks</h3><p><code>bunx --bun --package typescript@5.9.3 tsc --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --types bun --skipLibCheck src/cli.ts src/engine/basic-memory.ts src/engine/types.ts src/file-lock.ts src/memory-format.ts</code></p><p><strong>Exit 0 with no diagnostics.</strong></p></div>
+      <div class="card receipt"><h3>Isolated-home CLI smoke</h3><p>Public subprocess lifecycle: create → producer stage → resume → derived completion → raw-only completion → status.</p><p><strong>Stable replay ID; outcomes <code>derived</code> and <code>raw-only</code>; 2 completed receipts; 2 raw files; healthy status; external source unchanged.</strong></p></div>
+      <div class="card receipt"><h3>Two-axis review</h3><p>Standards and specification reviews compared the complete diff with fixed point <code>e9d0837</code>.</p><p><strong>Findings were converted into regression tests and fixes: pure JSON failure channels, v2 status semantics, strict calendar dates, schema-not-found, canonical Memory format, and documented schema routing.</strong></p></div>
+      <div class="card receipt"><h3>Diff hygiene</h3><p><code>git diff --check</code></p><p><strong>Exit 0. Task edits remain isolated from pre-existing skill/workspace changes.</strong></p></div>
     </div>
     <h3>Requirement-to-evidence checklist</h3>
     <table>
       <thead><tr><th>Requirement</th><th>Strong evidence required</th><th>Status</th></tr></thead>
       <tbody>
-        <tr><td>Stable stage and replay</td><td>Exact JSON assertions plus filesystem/log counts before and after replay.</td><td class="pending">Pending final receipt</td></tr>
-        <tr><td>Collision and tamper safety</td><td>Exit <code>65</code>, empty success channel, and a before/after proof of no mutation.</td><td class="pending">Pending final receipt</td></tr>
-        <tr><td>Concurrent convergence</td><td>Parallel public-CLI calls yielding one creator, replay receipts, and one durable event.</td><td class="pending">Pending final receipt</td></tr>
-        <tr><td>Derived completion validation</td><td>Positive multi-Memory case plus missing lineage, missing/duplicate index, TODO, traversal, and conflict negatives.</td><td class="pending">Pending final receipt</td></tr>
-        <tr><td>Raw-only completion</td><td>Required bounded reason, preserved raw bytes, completion receipt, equivalent replay, and conflicting-replay failure.</td><td class="pending">Pending final receipt</td></tr>
-        <tr><td>Compatibility</td><td>Legacy pending decode, unique raw-ref resume, positional completion, and existing human Add tests.</td><td class="pending">Pending final receipt</td></tr>
+        <tr><td>Stable stage and replay</td><td>Exact JSON assertions plus filesystem/log counts before and after replay.</td><td class="good">Passed</td></tr>
+        <tr><td>Collision and tamper safety</td><td>Exit <code>65</code>, empty success channel, and a before/after proof of no mutation.</td><td class="good">Passed</td></tr>
+        <tr><td>Concurrent convergence</td><td>Parallel public-CLI calls yielding one creator, replay receipts, and one durable event.</td><td class="good">Passed</td></tr>
+        <tr><td>Derived completion validation</td><td>Positive multi-Memory case plus missing lineage, missing/duplicate index, TODO, traversal, and conflict negatives.</td><td class="good">Passed</td></tr>
+        <tr><td>Raw-only completion</td><td>Required bounded reason, preserved raw bytes, completion receipt, equivalent replay, and conflicting-replay failure.</td><td class="good">Passed</td></tr>
+        <tr><td>Compatibility</td><td>Legacy pending decode, unique raw-ref resume, positional completion, and existing human Add tests.</td><td class="good">Passed</td></tr>
+        <tr><td>Schema tools</td><td>B0 gate, read-only infer/validate/diff, strict validation, absent/ambiguous schemas, Engine errors, and dirty recovery.</td><td class="good">Passed</td></tr>
       </tbody>
     </table>
   </section>
@@ -275,6 +277,16 @@ kb add --complete add-a1b2c3d4e5f60718293a4b5c \
       <h3>Engine fallback is pinned to Basic Memory 0.22.1</h3>
       <p>The specification called for repairing the runner so a successful <code>uvx</code> availability check uses the same persistent command prefix, but it did not require a version pin. The conservative implementation uses <code>uvx --from basic-memory==0.22.1 bm</code> instead of an unversioned fallback. A directly installed <code>bm</code> executable is still preferred when present.</p>
       <p><strong>Why:</strong> this prevents an upstream release from changing the schema/search contract underneath KB and matches repository contract tests that already pin version 0.22.1. The tradeoff is deliberate upgrade work later rather than surprise drift now.</p>
+    </div>
+    <div class="card deviation">
+      <h3>Schema uses Basic Memory's top-level capability route</h3>
+      <p>The older repository guidance generalized all Engine operations as <code>bm tool</code>. Basic Memory 0.22.1 actually exposes schema inference, validation, and diff as top-level <code>bm schema ... --json --local</code> commands. ADR-0001 and the build guide now record this explicit capability exception; search remains on <code>bm tool search-notes</code>.</p>
+      <p><strong>Why:</strong> using the real upstream interface is safer than inventing a nonexistent tool command. The process, pinning, normalization, and no-fork boundaries are unchanged.</p>
+    </div>
+    <div class="card deviation">
+      <h3>Project-name collisions receive a deterministic private suffix</h3>
+      <p>When an Engine project already uses the requested KB name at another local path, KB selects <code>&lt;name&gt;-&lt;8-char path hash&gt;</code>. A project already pointing at the same path is reused.</p>
+      <p><strong>Why:</strong> this preserves project isolation without exposing a new user choice or silently attaching the KB to the wrong path. The behavior is deterministic and covered through the public CLI.</p>
     </div>
     <div class="card deviation">
       <h3>Automatic schema drafting remains deferred</h3>
@@ -290,10 +302,6 @@ kb add --complete add-a1b2c3d4e5f60718293a4b5c \
       <h3>Report-only conservative choice: remove stale onboarding claims</h3>
       <p>The previous <code>implementation-notes.html</code> described a different onboarding repair and claimed completed test/browser receipts unrelated to this spec. Its useful self-contained layout and accessible quiz pattern were preserved, but its claims were replaced so this report cannot be mistaken for evidence about machine-safe ingestion.</p>
     </div>
-    <details>
-      <summary>Template for a later deviation</summary>
-      <p><strong>Observed edge:</strong> [exact evidence] · <strong>Planned behavior:</strong> [spec reference] · <strong>Conservative choice:</strong> [what was done] · <strong>Why:</strong> [invariant protected] · <strong>Verification:</strong> [test/receipt]</p>
-    </details>
   </section>
 
   <section aria-labelledby="deferred-title">
@@ -378,7 +386,7 @@ kb add --complete add-a1b2c3d4e5f60718293a4b5c \
     </form>
   </section>
 
-  <footer>Self-contained report. No external scripts, fonts, or network resources. Final implementation receipts must replace all <code>[FINALIZE: ...]</code> placeholders before the parent goal is marked complete.</footer>
+  <footer>Self-contained implementation report. No external scripts, fonts, or network resources. Verification receipts were recorded on 2026-07-10.</footer>
 </main>
 <script>
   (function () {

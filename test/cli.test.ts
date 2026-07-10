@@ -693,6 +693,7 @@ test("kb add validates producer identity and captured time before mutation", asy
     { args: ["--source", "bad/source", "--source-id", "artifact-1"], code: "INVALID_SOURCE" },
     { args: ["--source", "screenpipe", "--source-id", "line one\nline two"], code: "INVALID_SOURCE_ID" },
     { args: ["--captured-at", "2026-07-10 13:00"], code: "INVALID_CAPTURED_AT" },
+    { args: ["--captured-at", "2026-02-31T13:00:00Z"], code: "INVALID_CAPTURED_AT" },
   ];
   const kbDir = join(harness.home, "kb", "research");
   const before = await snapshotKbFiles(kbDir);
@@ -767,7 +768,7 @@ test("kb add derivative completion verifies lineage and cataloging, then replays
   const kbDir = join(harness.home, "kb", "research");
   const memoryA = "memories/alpha.md";
   const memoryB = "memories/beta.md";
-  await writeFile(join(kbDir, memoryA), "---\ntitle: Alpha\npermalink: alpha\n---\n\n## Summary\n\nAlpha\n");
+  await writeFile(join(kbDir, memoryA), "---\ntitle: Alpha\ntype: note\ntags:\n  - research\npermalink: alpha\n---\n\n## Summary\n\nAlpha\n");
 
   const missingLineage = await harness.runKb([
     "add", "--complete", handoffId, "--memory", memoryA, "--json", "--in", "research",
@@ -868,6 +869,9 @@ test("kb status exposes exact Add handoff IDs and resume commands", async () => 
   expect(status.stderr).toBe("");
   expect(status.stdout).toContain(`- Add: ${staged.result.handoffId}\n`);
   expect(status.stdout).toContain(`  Raw source: ${staged.result.raw.ref}\n`);
+  expect(status.stdout).toContain(`  State: Agent review required; filename hint: ${staged.result.suggestedMemoryRef}\n`);
+  expect(status.stdout).not.toContain("Memory missing:");
+  expect(status.stdout).not.toContain("Ready for completion confirmation");
   expect(status.stdout).toContain(`  Resume: kb add --resume ${staged.result.handoffId} --in research\n`);
 });
 
@@ -1812,6 +1816,8 @@ function memoryWithSourceRef(title: string, permalink: string, rawRef: string): 
   return `---
 title: ${title}
 type: note
+tags:
+  - research
 permalink: ${permalink}
 source_refs:
   - ${rawRef}
@@ -1820,6 +1826,14 @@ source_refs:
 ## Summary
 
 ${title}
+
+## Observations
+
+- [summary] ${title} #research
+
+## Relations
+
+- relates_to [[Source]]
 `;
 }
 

@@ -113,12 +113,25 @@ test("an abandoned Add is durable, visible, resumable, and explicitly completabl
 
   await writeFile(join(kbDir, "memories", "one.md"), `---
 title: One
+type: note
+tags:
+  - research
 permalink: one
 source_refs:
   - ${rawRef}
 ---
 
-# One
+## Summary
+
+One
+
+## Observations
+
+- [summary] One #research
+
+## Relations
+
+- relates_to [[Source]]
 `);
   await appendFile(
     join(kbDir, "index.md"),

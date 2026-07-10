@@ -13,3 +13,12 @@ Our CLI needs Basic Memory's substrate (markdown notes, SQLite index, hybrid sea
 - Our note format must stay strictly compatible with Basic Memory's `NOTE-FORMAT.md` spec, or the A→B upgrade path lies. This is a contract to test in CI.
 - Basic Memory's skills (memory-notes, memory-reflect, memory-defrag, memory-schema) are plain markdown prompts — we adapt them freely rather than depending on them.
 - License boundary: we invoke Basic Memory as a separate process; we do not import or link its code.
+
+## 2026-07-10 amendment: schema capability route
+
+Basic Memory 0.22.1 exposes schema inference, validation, and diffing as top-level
+`bm schema infer|validate|diff --json --local` commands rather than through `bm tool`.
+KB may invoke that documented upstream route through the same pinned, out-of-process
+Engine adapter. The architectural boundary is unchanged: KB normalizes the JSON and
+does not expose Basic Memory's raw command surface as its product interface. Search
+continues to use `bm tool search-notes`.

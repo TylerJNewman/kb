@@ -215,11 +215,14 @@ source_refs:
   ]);
 
   expect(completed.code).toBe(69);
-  expect(completed.stderr).toContain("completed, but Engine refresh is pending");
-  expect(JSON.parse(completed.stdout)).toMatchObject({
+  expect(completed.stdout).toBe("");
+  expect(JSON.parse(completed.stderr)).toMatchObject({
     schemaVersion: 1,
-    ok: true,
+    ok: false,
     command: "add",
+    error: {
+      code: "ENGINE_FAILURE",
+    },
     result: {
       state: "completed",
       handoffCompleted: true,
@@ -236,6 +239,31 @@ source_refs:
   expect(search.stderr).toBe("");
   expect(search.stdout).toContain("Results: 0");
   expect(await readFile(join(kbDir, ".kb", "engine-dirty"), "utf8").catch(() => "missing")).toBe("missing");
+});
+
+test("kb schema diff fails closed when the Engine reports no schema", async () => {
+  const kbDir = await scaffoldResearchKb();
+  await enableEngine(kbDir);
+  await writeFile(join(kbDir, "memories", "schema-meeting.md"), schemaNote("meeting"));
+  await harness.writeFakeExecutable("bm", `#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+if [ "$1" = "schema" ] && [ "$2" = "diff" ]; then
+  printf '%s\\n' '{"note_type":"meeting","schema_found":false,"new_fields":[],"dropped_fields":[],"cardinality_changes":[]}'
+  exit 0
+fi
+exit 2
+`);
+
+  const result = await harness.runKb(["schema", "diff", "meeting", "--json", "--in", "research"]);
+
+  expect(result.code).toBe(65);
+  expect(result.stdout).toBe("");
+  expect(JSON.parse(result.stderr)).toMatchObject({
+    ok: false,
+    command: "schema diff",
+    error: { code: "SCHEMA_NOT_FOUND" },
+  });
 });
 
 test("kb enable search resumes an existing same-path Engine project without adding it again", async () => {

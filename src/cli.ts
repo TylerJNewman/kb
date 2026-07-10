@@ -1204,6 +1204,9 @@ async function schemaKb(
       await requireUniqueSchemaNote(target.path, noteType);
       const diffed = await adapter.diffSchema(target.path, config.engineProject, noteType);
       if (diffed.ok === false) throw schemaEngineFailure(diffed);
+      if (!diffed.value.schemaFound) {
+        throw new SchemaCommandError("SCHEMA_NOT_FOUND", `Engine found no schema for type ${noteType}`, EXIT_DATAERR);
+      }
       await clearEngineDirty(target.path);
       const result = { ...diffed.value, type: diffed.value.noteType, agentReviewRequired: true };
       writeSchemaSuccess(target, "schema diff", result, options.json, renderSchemaDiff(result));
@@ -1283,6 +1286,35 @@ function schemaEngineFailure(failure: { message: string; exitCode?: 130 | 143 })
   return new SchemaCommandError("ENGINE_FAILURE", failure.message, failure.exitCode ?? EXIT_UNAVAILABLE);
 }
 
+function writeJsonSuccess(
+  command: string,
+  target: { name: string; path: string },
+  result: Record<string, unknown>,
+): void {
+  process.stdout.write(`${JSON.stringify({
+    schemaVersion: 1,
+    ok: true,
+    command,
+    kb: { name: target.name, path: target.path },
+    result,
+  })}\n`);
+}
+
+function writeJsonFailure(
+  command: string,
+  code: string,
+  message: string,
+  result?: Record<string, unknown>,
+): void {
+  process.stderr.write(`${JSON.stringify({
+    schemaVersion: 1,
+    ok: false,
+    command,
+    error: { code, message },
+    ...(result === undefined ? {} : { result }),
+  })}\n`);
+}
+
 function writeSchemaSuccess(
   target: { name: string; path: string },
   command: string,
@@ -1291,13 +1323,7 @@ function writeSchemaSuccess(
   text: string,
 ): void {
   if (json) {
-    process.stdout.write(`${JSON.stringify({
-      schemaVersion: 1,
-      ok: true,
-      command,
-      kb: { name: target.name, path: target.path },
-      result,
-    })}\n`);
+    writeJsonSuccess(command, target, result);
     return;
   }
   process.stdout.write(text);
@@ -1305,12 +1331,7 @@ function writeSchemaSuccess(
 
 function writeSchemaError(command: string, error: SchemaCommandError, json: boolean): void {
   if (json) {
-    process.stderr.write(`${JSON.stringify({
-      schemaVersion: 1,
-      ok: false,
-      command,
-      error: { code: error.code, message: error.message },
-    })}\n`);
+    writeJsonFailure(command, error.code, error.message);
     return;
   }
   writeError(error.message);
@@ -1740,7 +1761,7 @@ type PendingReflect = {
 type HandoffInspection = {
   adds: Array<{
     record: PendingAdd;
-    state: "raw-missing" | "memory-missing" | "index-missing" | "ready-to-confirm";
+    state: "raw-missing" | "agent-review" | "memory-missing" | "index-missing" | "ready-to-confirm";
   }>;
   drafts: string[];
   reflect: PendingReflect | null;
@@ -1875,7 +1896,22 @@ function isUtf8RoundTrip(value: string): boolean {
 }
 
 function normalizeRfc3339(value: string): string {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (match === null) {
+    throw new AddCommandError("INVALID_CAPTURED_AT", "--captured-at must be RFC3339", EXIT_USAGE);
+  }
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offsetHourText, offsetMinuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = offsetHourText === undefined ? 0 : Number(offsetHourText);
+  const offsetMinute = offsetMinuteText === undefined ? 0 : Number(offsetMinuteText);
+  const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+  if (day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59
+    || offsetHour > 23 || offsetMinute > 59) {
     throw new AddCommandError("INVALID_CAPTURED_AT", "--captured-at must be RFC3339", EXIT_USAGE);
   }
   const parsed = new Date(value);
@@ -2293,13 +2329,13 @@ async function finishCompletedAddResponse(
   await markEngineDirty(target.path, completed.handoffId);
   const refreshed = await new BasicMemoryAdapter().reindex(target.path, config.engineProject);
   if (refreshed.ok === false) {
-    writeAddSuccess(
-      target,
-      { ...completedAddResult(completed, replayed), handoffCompleted: true, engineRefresh: "pending" },
-      json,
-      text,
-    );
-    writeError(`Add handoff ${completed.handoffId} completed, but Engine refresh is pending. ${refreshed.message}`);
+    const message = `Add handoff ${completed.handoffId} completed, but Engine refresh is pending. ${refreshed.message}`;
+    const result = { ...completedAddResult(completed, replayed), handoffCompleted: true, engineRefresh: "pending" };
+    if (json) {
+      writeJsonFailure("add", "ENGINE_FAILURE", message, result);
+    } else {
+      writeError(message);
+    }
     return refreshed.exitCode ?? EXIT_UNAVAILABLE;
   }
   await clearEngineDirty(target.path);
@@ -2343,6 +2379,22 @@ async function verifyDerivativeCompletion(
     }
     if (isUntouchedDraft(text)) {
       throw new AddCommandError("INVALID_COMPLETION", `cannot complete Add: Memory is an untouched TODO draft: ${memoryRef}`, EXIT_DATAERR);
+    }
+    for (const key of ["title", "type", "permalink"] as const) {
+      if (frontmatterScalar(text, key) === null) {
+        throw new AddCommandError(
+          "INVALID_MEMORY_FORMAT",
+          `cannot complete Add: ${memoryRef} is missing required ${key} frontmatter`,
+          EXIT_DATAERR,
+        );
+      }
+    }
+    if (!/^tags:\s*\n(?:\s+-\s+.+\n?)+/m.test(text)) {
+      throw new AddCommandError(
+        "INVALID_MEMORY_FORMAT",
+        `cannot complete Add: ${memoryRef} is missing required tags frontmatter`,
+        EXIT_DATAERR,
+      );
     }
     if (!frontmatterSourceRefs(text).includes(record.rawRef)) {
       throw new AddCommandError(
@@ -2449,13 +2501,7 @@ function writeAddSuccess(
 ): void {
   if (json) {
     const renderedResult = JSON.parse(JSON.stringify(result).replaceAll("__KB_NAME__", target.name)) as Record<string, unknown>;
-    process.stdout.write(`${JSON.stringify({
-      schemaVersion: 1,
-      ok: true,
-      command: "add",
-      kb: { name: target.name, path: target.path },
-      result: renderedResult,
-    })}\n`);
+    writeJsonSuccess("add", target, renderedResult);
     return;
   }
   if (text !== undefined) process.stdout.write(text);
@@ -2463,12 +2509,7 @@ function writeAddSuccess(
 
 function writeAddError(error: AddCommandError, json: boolean): void {
   if (json) {
-    process.stderr.write(`${JSON.stringify({
-      schemaVersion: 1,
-      ok: false,
-      command: "add",
-      error: { code: error.code, message: error.message },
-    })}\n`);
+    writeJsonFailure("add", error.code, error.message);
     return;
   }
   writeError(error.message);
@@ -2521,14 +2562,19 @@ async function inspectHandoffs(kbPath: string): Promise<HandoffInspection> {
           continue;
         }
         const rawExists = await exists(join(kbPath, record.rawRef));
-        const memoryExists = await exists(join(kbPath, record.suggestedMemoryRef));
-        const state = !rawExists
-          ? "raw-missing"
-          : !memoryExists
+        let state: HandoffInspection["adds"][number]["state"];
+        if (!rawExists) {
+          state = "raw-missing";
+        } else if (record.schemaVersion === 2) {
+          state = "agent-review";
+        } else {
+          const memoryExists = await exists(join(kbPath, record.suggestedMemoryRef));
+          state = !memoryExists
             ? "memory-missing"
             : !indexRefs.has(record.suggestedMemoryRef)
               ? "index-missing"
               : "ready-to-confirm";
+        }
         adds.push({ record, state });
       } catch {
         invalidMetadata.push(ref);
@@ -3023,6 +3069,7 @@ function addHandoffV2Playbook(record: PendingAddV2, targetName: string): string 
     ? "v1 stages a URL reference only; full HTML archiving is deferred."
     : "local file copied verbatim into raw/.";
   const heading = record.arm === "wiki" ? "Wiki add playbook" : "Add playbook";
+  const formatLines = memoryFormatPlaybookLines(record.suggestedMemoryRef, record.title);
   return `${heading}
 Handoff ID: ${record.handoffId}
 Raw source: ${record.rawRef}
@@ -3034,12 +3081,16 @@ Agent half:
 2. Inspect index.md, existing Memories, and search results before choosing an outcome.
 3. Treat ${record.suggestedMemoryRef} as a filename hint, not a semantic route.
 4. Choose whether to update, create, split, or close this handoff raw-only.
-5. Use a meaningful domain type only when the artifact and established conventions support it; do not invent a schema or folder hierarchy from one artifact.
-6. Add ${record.rawRef} to each affected Memory's source_refs without deleting prior refs.
-7. Add or update exactly one index.md catalog entry per affected Memory; for the suggested filename, the title hint is: ${indexLine(record.suggestedMemoryRef, record.title)}
-8. Complete with one or more Memories:
+5. For each created or updated Memory, use the canonical structured Markdown format with frontmatter fields title, type, tags, and permalink. ${formatLines[0]}
+6. ${formatLines[1]}
+7. ${formatLines[2]}
+8. ${formatLines[3]}
+9. Use a meaningful domain type only when the artifact and established conventions support it; do not invent a schema or folder hierarchy from one artifact.
+10. Add ${record.rawRef} to each affected Memory's source_refs without deleting prior refs.
+11. Add or update exactly one index.md catalog entry per affected Memory. For the filename hint only: ${formatLines[4]}
+12. Complete with one or more Memories:
    kb add --complete ${record.handoffId} --memory <memories/ref.md> --in ${targetName}
-9. Or close raw-only with a durable reason:
+13. Or close raw-only with a durable reason:
    kb add --complete ${record.handoffId} --no-memory --reason <single-line-reason> --in ${targetName}
 
 If this output is lost, run:
@@ -3292,6 +3343,8 @@ function renderUnfinishedWork(targetName: string, inspection: HandoffInspection)
   for (const { record, state } of inspection.adds) {
     const stateText = state === "raw-missing"
       ? `Raw source missing: ${record.rawRef}`
+      : state === "agent-review"
+        ? `Agent review required; filename hint: ${record.suggestedMemoryRef}`
       : state === "memory-missing"
         ? `Memory missing: ${record.suggestedMemoryRef}`
         : state === "index-missing"

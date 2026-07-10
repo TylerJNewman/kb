@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BasicMemoryAdapter } from "../src/engine/basic-memory";
 
+// Forced seam: the implementation spec defines the Engine subprocess boundary separately
+// from the public CLI. These tests observe runner selection, process-tree timeout, and signal
+// forwarding that cannot be asserted through CLI output without coupling to private temp state.
+// Public schema behavior is covered through the CLI subprocess in test/schema-cli.test.ts.
+
 const fixtureDir = resolve(import.meta.dir, "fixtures", "basic-memory-contract");
 
 let root = "";
