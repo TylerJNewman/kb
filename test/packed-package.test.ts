@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -20,25 +20,84 @@ type PackResult = {
   version: string;
 };
 
+type AcceptanceStage = {
+  label: string;
+  timeoutMs: number;
+};
+
 const repoRoot = resolve(import.meta.dir, "..");
+const PACKED_CLI_TIMEOUT_MS = 5_000;
+const ACCEPTANCE_STAGES = {
+  npmPack: { label: "npm pack", timeoutMs: 30_000 },
+  npmInstall: { label: "npm install", timeoutMs: 30_000 },
+  repositoryVersion: { label: "repository kb --version", timeoutMs: PACKED_CLI_TIMEOUT_MS },
+  packedVersion: { label: "packed kb --version", timeoutMs: PACKED_CLI_TIMEOUT_MS },
+  packedStart: { label: "packed kb start", timeoutMs: PACKED_CLI_TIMEOUT_MS },
+  packedNew: { label: "packed kb new", timeoutMs: PACKED_CLI_TIMEOUT_MS },
+  packedAdd: { label: "packed kb add", timeoutMs: PACKED_CLI_TIMEOUT_MS },
+  packedDraft: { label: "packed kb draft", timeoutMs: PACKED_CLI_TIMEOUT_MS },
+  packedSearch: { label: "packed kb search", timeoutMs: PACKED_CLI_TIMEOUT_MS },
+  packedStatus: { label: "packed kb status", timeoutMs: PACKED_CLI_TIMEOUT_MS },
+} as const satisfies Record<string, AcceptanceStage>;
 
 async function run(
   command: string,
   args: string[],
-  options: { cwd: string; env: Record<string, string> },
+  options: { cwd: string; env: NodeJS.ProcessEnv; stage: AcceptanceStage },
 ): Promise<CommandResult> {
-  const process = Bun.spawn([command, ...args], {
+  let timedOut = false;
+  let escalation: Promise<void> | null = null;
+  const proc = Bun.spawn([command, ...args], {
     cwd: options.cwd,
+    detached: true,
     env: options.env,
     stdout: "pipe",
     stderr: "pipe",
   });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    killProcessGroup(proc.pid, "SIGTERM");
+    escalation = new Promise((resolve) => {
+      const killWithSigkill = setTimeout(() => {
+        killProcessGroup(proc.pid, "SIGKILL");
+        resolve();
+      }, 100);
+      killWithSigkill.unref?.();
+    });
+  }, options.stage.timeoutMs);
+  timeout.unref?.();
   const [stdout, stderr, code] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-    process.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
   ]);
+  clearTimeout(timeout);
+  if (escalation !== null) {
+    await escalation;
+  }
+  if (timedOut) {
+    return {
+      code: 124,
+      stdout,
+      stderr: `${stderr}${stderr.length > 0 && !stderr.endsWith("\n") ? "\n" : ""}packed acceptance: ${options.stage.label} timed out after ${options.stage.timeoutMs}ms\n`,
+    };
+  }
   return { code, stdout, stderr };
+}
+
+function killProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  Bun.spawnSync(["/bin/kill", `-${signal}`, "--", `-${pid}`], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+}
+
+function processExists(pid: number): boolean {
+  const result = Bun.spawnSync(["/bin/kill", "-0", String(pid)], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return result.exitCode === 0;
 }
 
 function expectSuccess(result: CommandResult): void {
@@ -85,7 +144,7 @@ test("the real npm tarball passes the clean-home core workflow", async () => {
     const pack = await run(
       "npm",
       ["pack", "--ignore-scripts", "--json", "--pack-destination", packDir],
-      { cwd: repoRoot, env: npmEnv },
+      { cwd: repoRoot, env: npmEnv, stage: ACCEPTANCE_STAGES.npmPack },
     );
     expect(pack.code, pack.stderr).toBe(0);
     const [packed] = JSON.parse(pack.stdout) as PackResult[];
@@ -109,7 +168,7 @@ test("the real npm tarball passes the clean-home core workflow", async () => {
     const install = await run(
       "npm",
       ["install", "--ignore-scripts", "--no-package-lock", "--prefix", installPrefix, tarball],
-      { cwd, env: npmEnv },
+      { cwd, env: npmEnv, stage: ACCEPTANCE_STAGES.npmInstall },
     );
     expect(install.code, install.stderr).toBe(0);
 
@@ -128,16 +187,23 @@ test("the real npm tarball passes the clean-home core workflow", async () => {
       TMPDIR: join(root, "tmp"),
     };
     await mkdir(cliEnv.TMPDIR);
-    const kb = (args: string[], commandCwd = cwd) => run(packedKb, args, { cwd: commandCwd, env: cliEnv });
+    const kb = (stage: AcceptanceStage, args: string[], commandCwd = cwd) =>
+      run(packedKb, args, { cwd: commandCwd, env: cliEnv, stage });
 
-    const version = await kb(["--version"]);
+    const version = await kb(ACCEPTANCE_STAGES.packedVersion, ["--version"]);
     expect(version).toEqual({ code: 0, stdout: `kb ${packed!.version}\n`, stderr: "" });
+    const repositoryVersion = await run(process.execPath, [join(repoRoot, "bin/kb"), "--version"], {
+      cwd,
+      env: cliEnv,
+      stage: ACCEPTANCE_STAGES.repositoryVersion,
+    });
+    expect(repositoryVersion).toEqual(version);
 
-    const start = await kb(["start"]);
+    const start = await kb(ACCEPTANCE_STAGES.packedStart, ["start"]);
     expectSuccess(start);
     expect(start.stdout).toContain("First run");
 
-    const created = await kb(["new", "packed-smoke"]);
+    const created = await kb(ACCEPTANCE_STAGES.packedNew, ["new", "packed-smoke"]);
     expectSuccess(created);
     const kbDir = join(home, "kb", "packed-smoke");
     expect(created.stdout).toContain(`Path: ${kbDir}`);
@@ -150,11 +216,11 @@ test("the real npm tarball passes the clean-home core workflow", async () => {
 
     const source = join(cwd, "packed-source.md");
     await writeFile(source, "# Packed source\n\nThe packed workflow is isolated.\n");
-    const added = await kb(["add", source, "--in", "packed-smoke"]);
+    const added = await kb(ACCEPTANCE_STAGES.packedAdd, ["add", source, "--in", "packed-smoke"]);
     expectSuccess(added);
     expect(added.stdout).toContain("Add playbook");
 
-    const drafted = await kb(["draft", "Packed Memory", "--in", "packed-smoke"]);
+    const drafted = await kb(ACCEPTANCE_STAGES.packedDraft, ["draft", "Packed Memory", "--in", "packed-smoke"]);
     expect(drafted).toEqual({ code: 0, stdout: "Created memories/packed-memory.md\n", stderr: "" });
     await writeFile(join(kbDir, "memories/packed-memory.md"), `---
 title: Packed Memory
@@ -175,17 +241,17 @@ Line format:
 - [[memories/packed-memory.md|Packed Memory]] | category: acceptance | summary: The packed workflow is isolated.
 `);
 
-    const searched = await kb(["search", "packed workflow", "--in", "packed-smoke"]);
+    const searched = await kb(ACCEPTANCE_STAGES.packedSearch, ["search", "packed workflow", "--in", "packed-smoke"]);
     expectSuccess(searched);
     expect(searched.stdout).toContain("1. memories/packed-memory.md | Packed Memory");
 
-    const status = await kb(["status", "--in", "packed-smoke"]);
+    const status = await kb(ACCEPTANCE_STAGES.packedStatus, ["status", "--in", "packed-smoke"]);
     expectSuccess(status);
     expect(status.stdout).toContain("Search: plain files");
     expect(status.stdout).toContain("Sources: 1");
     expect(status.stdout).toContain("Memories: 1");
   });
-}, 30_000);
+}, 120_000);
 
 test("the packed acceptance sandbox is removed when verification fails", async () => {
   let sandboxRoot = "";
@@ -199,5 +265,75 @@ test("the packed acceptance sandbox is removed when verification fails", async (
   ).rejects.toThrow("injected acceptance failure");
 
   expect(await Bun.file(join(sandboxRoot, "failure-artifact")).exists()).toBe(false);
+  expect(await Bun.file(sandboxRoot).exists()).toBe(false);
+});
+
+test("a packed acceptance stage reports its name when it times out", async () => {
+  const result = await run("/bin/sleep", ["0.3"], {
+    cwd: repoRoot,
+    env: { ...process.env },
+    stage: { label: "packed test stage", timeoutMs: 50 },
+  });
+
+  expect(result).toEqual({
+    code: 124,
+    stdout: "",
+    stderr: "packed acceptance: packed test stage timed out after 50ms\n",
+  });
+});
+
+test("a timed-out stage terminates descendants and removes its acceptance sandbox", async () => {
+  let sandboxRoot = "";
+  const outcome = await withAcceptanceSandbox(async (root) => {
+    sandboxRoot = root;
+    const script = join(root, "forking-stage");
+    const childScript = join(root, "term-resistant-child");
+    const parentPidFile = join(root, "parent.pid");
+    const childPidFile = join(root, "child.pid");
+    const termFile = join(root, "term-signals");
+    await writeFile(childScript, `#!/bin/sh
+echo $$ > "$CHILD_PID_FILE"
+trap 'printf "child\\n" >> "$TERM_FILE"' TERM
+while :; do /bin/sleep 1; done
+`, { mode: 0o755 });
+    await writeFile(script, `#!/bin/sh
+echo $$ > "$PARENT_PID_FILE"
+trap 'printf "parent\\n" >> "$TERM_FILE"' TERM
+"$CHILD_SCRIPT" &
+while :; do wait; done
+`, { mode: 0o755 });
+
+    const result = await run(script, [], {
+      cwd: root,
+      env: {
+        ...process.env,
+        PARENT_PID_FILE: parentPidFile,
+        CHILD_PID_FILE: childPidFile,
+        TERM_FILE: termFile,
+        CHILD_SCRIPT: childScript,
+      },
+      stage: { label: "forking packed stage", timeoutMs: 500 },
+    });
+    expect(await Bun.file(parentPidFile).exists(), JSON.stringify(result)).toBe(true);
+    expect(await Bun.file(childPidFile).exists(), JSON.stringify(result)).toBe(true);
+    return {
+      result,
+      parentPid: Number((await readFile(parentPidFile, "utf8")).trim()),
+      childPid: Number((await readFile(childPidFile, "utf8")).trim()),
+      termSignals: await readFile(termFile, "utf8"),
+    };
+  });
+
+  const survivors = [outcome.parentPid, outcome.childPid].filter(processExists);
+  for (const pid of survivors) {
+    Bun.spawnSync(["/bin/kill", "-KILL", String(pid)]);
+  }
+
+  expect(outcome.result.code).toBe(124);
+  expect(outcome.result.stdout).toBe("");
+  expect(outcome.result.stderr).toContain("packed acceptance: forking packed stage timed out after 500ms\n");
+  expect(outcome.termSignals).toContain("parent\n");
+  expect(outcome.termSignals).toContain("child\n");
+  expect(survivors).toEqual([]);
   expect(await Bun.file(sandboxRoot).exists()).toBe(false);
 });

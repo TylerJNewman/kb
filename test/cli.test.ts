@@ -170,63 +170,6 @@ test("kb --version fails explicitly when package metadata is missing", async () 
   }
 });
 
-test("packed npm artifact kb --version matches installed package metadata and repository output", async () => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "kb-packed-version-test-")));
-  const packDir = join(root, "pack");
-  const installPrefix = join(root, "install");
-  const binDir = join(root, "bin");
-  const npmEnv = {
-    npm_config_cache: join(root, "npm-cache"),
-    npm_config_update_notifier: "false",
-    npm_config_audit: "false",
-    npm_config_fund: "false",
-  };
-
-  try {
-    await Promise.all([
-      mkdir(packDir),
-      mkdir(installPrefix),
-      mkdir(binDir),
-      mkdir(join(root, "home")),
-      mkdir(join(root, "xdg")),
-    ]);
-    await writeFile(join(binDir, "bun"), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 });
-
-    const pack = await runProcess("npm", ["pack", "--json", "--pack-destination", packDir], {
-      cwd: resolve(import.meta.dir, ".."),
-      env: npmEnv,
-    });
-    expect(pack.code, pack.stderr).toBe(0);
-
-    const [packed] = JSON.parse(pack.stdout) as Array<{ filename: string }>;
-    const tarball = join(packDir, packed.filename);
-    const install = await runProcess("npm", ["install", "--ignore-scripts", "--prefix", installPrefix, tarball], {
-      cwd: root,
-      env: npmEnv,
-    });
-    expect(install.code, install.stderr).toBe(0);
-
-    const installedMetadata = JSON.parse(
-      await readFile(join(installPrefix, "node_modules/@tylerjnewman/kb/package.json"), "utf8"),
-    ) as { version: string };
-    const packedKb = join(installPrefix, "node_modules/.bin/kb");
-    const packedVersion = await runProcess(packedKb, ["--version"], {
-      cwd: root,
-      env: isolatedKbEnv(root, binDir),
-    });
-    const repositoryVersion = await harness.runKb(["--version"]);
-
-    expect(packedVersion).toEqual({
-      code: 0,
-      stdout: `kb ${installedMetadata.version}\n`,
-      stderr: "",
-    });
-    expect(packedVersion.stdout).toBe(repositoryVersion.stdout);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test("unknown command exits non-zero and writes stderr only", async () => {
   const result = await harness.runKb(["wat"]);
 
