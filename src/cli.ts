@@ -2234,7 +2234,7 @@ function parseCompletedAddV2(value: unknown, path: string): CompletedAddV2 {
     }
   }
   if (value.outcome === "raw-only"
-    && (typeof value.reason !== "string" || value.reason.length === 0 || value.reason.length > 500
+    && (typeof value.reason !== "string" || value.reason.length === 0 || Array.from(value.reason).length > 500
       || !isSingleLine(value.reason) || !isUtf8RoundTrip(value.reason) || value.memories !== undefined)) {
     throw malformedState(path);
   }

@@ -869,6 +869,23 @@ test("kb add raw-only completion preserves the raw source and durable reason", a
     outcome: "raw-only",
     reason: "No durable knowledge",
   });
+
+  const unicodeSource = join(harness.cwd, "unicode-reason.md");
+  await writeFile(unicodeSource, "unicode reason source\n");
+  const unicodeStage = JSON.parse((await harness.runKb(["add", unicodeSource, "--json", "--in", "research"])).stdout);
+  const unicodeReason = "😀".repeat(300);
+  const unicodeComplete = await harness.runKb([
+    "add", "--complete", unicodeStage.result.handoffId,
+    "--no-memory", "--reason", unicodeReason, "--json", "--in", "research",
+  ]);
+  expect(unicodeComplete.code).toBe(0);
+  expect(JSON.parse(unicodeComplete.stdout).result.reason).toBe(unicodeReason);
+  const unicodeReplay = await harness.runKb([
+    "add", "--complete", unicodeStage.result.handoffId,
+    "--no-memory", "--reason", unicodeReason, "--json", "--in", "research",
+  ]);
+  expect(unicodeReplay.code).toBe(0);
+  expect(JSON.parse(unicodeReplay.stdout).result).toMatchObject({ replayed: true, reason: unicodeReason });
 });
 
 test("kb status exposes exact Add handoff IDs and resume commands", async () => {

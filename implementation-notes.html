@@ -220,7 +220,7 @@ kb add --complete add-a1b2c3d4e5f60718293a4b5c \
     <table>
       <thead><tr><th>Area</th><th>Expected responsibility</th><th>Final receipt</th></tr></thead>
       <tbody>
-        <tr><td><code>src/cli.ts</code></td><td>Parse stage/resume/complete and schema forms; validate flags; keep JSON channels pure; preserve legacy forms; coordinate locks and state transitions.</td><td class="good"><code>addKb</code>, <code>schemaKb</code>, <code>finishCompletedAddResponse</code></td></tr>
+        <tr><td><code>src/cli.ts</code></td><td>Parse stage/resume/complete and schema forms; validate flags; keep JSON channels pure; preserve legacy forms; coordinate locks and state transitions.</td><td class="good"><code>addSource</code>, <code>schemaKb</code>, <code>finishCompletedAddResponse</code></td></tr>
         <tr><td>Add handoff/state helpers in <code>src/cli.ts</code></td><td>Canonical identity, full hashes, atomic pending/completed records, replay comparison, raw tamper checks, and legacy metadata decoding.</td><td class="good"><code>addIdentitySha256</code>, <code>writeJsonAtomic</code>, <code>loadAddHandoff</code></td></tr>
         <tr><td>Memory/index verification in <code>src/cli.ts</code></td><td>Normalize refs; enforce canonical frontmatter, <code>memories/</code> containment, <code>source_refs</code>, non-TODO content, and exactly one catalog entry.</td><td class="good"><code>verifyDerivativeCompletion</code>, <code>renderPendingAddPlaybook</code></td></tr>
         <tr><td>Engine adapter</td><td>Choose exact ambient 0.22.1 or pinned <code>uvx</code>; bound process groups; normalize project, search, and schema JSON.</td><td class="good"><code>src/engine/basic-memory.ts</code>, <code>src/engine/types.ts</code></td></tr>
