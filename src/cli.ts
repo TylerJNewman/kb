@@ -1,13 +1,17 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, parse, resolve } from "node:path";
 import { BasicMemoryAdapter } from "./engine/basic-memory";
+import { withFileLock } from "./file-lock";
 import { FORMAT_VERSION, INDEX_LINE_FORMAT, indexLine, memoryFormatPlaybookLines, memoryTemplate } from "./memory-format";
 
-export const VERSION = "0.1.0";
+const packageJson = createRequire(import.meta.url)("../package.json") as { version: string };
+export const VERSION = packageJson.version;
 
 const EXIT_USAGE = 64;
+const EXIT_DATAERR = 65;
 const EXIT_UNAVAILABLE = 69;
 const SEARCH_ADVISOR_INDEX_ENTRY_THRESHOLD = 3;
 const SCAFFOLD_ARMS = new Set(["wiki", "b0"]);
@@ -34,6 +38,12 @@ const HIDDEN_COMMAND_ALIASES: Record<string, string> = {
   lint: "check",
 };
 
+class CliError extends Error {
+  constructor(message: string, readonly exitCode = EXIT_USAGE) {
+    super(message);
+  }
+}
+
 type ParseResult =
   | {
       ok: true;
@@ -45,10 +55,24 @@ type ParseResult =
       args: string[];
       guide: boolean;
       arm: string | null;
+      resumeRef: string | null;
+      complete: boolean;
     }
   | { ok: false; message: string };
 
 export async function main(argv: string[]): Promise<number> {
+  try {
+    return await runMain(argv);
+  } catch (error) {
+    if (error instanceof CliError) {
+      writeError(error.message);
+      return error.exitCode;
+    }
+    throw error;
+  }
+}
+
+async function runMain(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv);
 
   if (!parsed.ok) {
@@ -116,6 +140,21 @@ export async function main(argv: string[]): Promise<number> {
     return EXIT_USAGE;
   }
 
+  if (parsed.resumeRef !== null && parsed.command !== "add" && parsed.command !== "draft") {
+    writeError("--resume is only valid with kb add or kb draft");
+    return EXIT_USAGE;
+  }
+
+  if (parsed.complete && parsed.command !== "add" && parsed.command !== "reflect") {
+    writeError("--complete is only valid with kb add or kb reflect");
+    return EXIT_USAGE;
+  }
+
+  if (parsed.complete && parsed.resumeRef !== null) {
+    writeError("--complete and --resume cannot be used together");
+    return EXIT_USAGE;
+  }
+
   if (parsed.command === "new") {
     return createKb(parsed.args, parsed.arm);
   }
@@ -145,11 +184,11 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (parsed.command === "add") {
-    return addSource(parsed.kbName, parsed.args);
+    return addSource(parsed.kbName, parsed.args, parsed.resumeRef, parsed.complete);
   }
 
   if (parsed.command === "draft") {
-    return createMemoryNote(parsed.kbName, parsed.args);
+    return createMemoryNote(parsed.kbName, parsed.args, parsed.resumeRef);
   }
 
   if (parsed.command === "log") {
@@ -161,7 +200,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (parsed.command === "reflect") {
-    return reflectKb(parsed.kbName, parsed.args);
+    return reflectKb(parsed.kbName, parsed.args, parsed.complete);
   }
 
   if (parsed.command === "check") {
@@ -180,6 +219,8 @@ function parseArgs(argv: string[]): ParseResult {
   let command: string | null = null;
   let guide = false;
   let arm: string | null = null;
+  let resumeRef: string | null = null;
+  let complete = false;
   const args: string[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -222,6 +263,21 @@ function parseArgs(argv: string[]): ParseResult {
       continue;
     }
 
+    if (arg === "--resume") {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("-")) {
+        return { ok: false, message: "--resume requires a ref" };
+      }
+      resumeRef = value;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--complete") {
+      complete = true;
+      continue;
+    }
+
     if (arg === "--arm") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("-")) {
@@ -253,7 +309,7 @@ function parseArgs(argv: string[]): ParseResult {
     command = HIDDEN_COMMAND_ALIASES[arg] ?? arg;
   }
 
-  return { ok: true, help, version, kbName, targetFlag, command, args, guide, arm };
+  return { ok: true, help, version, kbName, targetFlag, command, args, guide, arm, resumeRef, complete };
 }
 
 function writeError(message: string): void {
@@ -330,10 +386,10 @@ Usage:
   kb start
 
 What it teaches:
-  new -> add -> agent writes Memory from the playbook -> search -> status
+  new -> add an existing source -> agent follows the playbook -> status/search
 
 Rules of thumb:
-  Prints a first-run walkthrough; does not modify files.
+  Optional and read-only: prints text; does not create or change files.
 `;
 }
 
@@ -510,75 +566,31 @@ async function startKb(args: string[]): Promise<number> {
     return EXIT_USAGE;
   }
 
-  const registry = await loadRegistry();
   const kbHome = join(homedir(), "kb");
-  if (registry.kbs.size === 0) {
-    process.stdout.write(`First run
+  const kbRoot = join(kbHome, "research");
+  process.stdout.write(`First run
 
 KB Home: ${kbHome}
 
 1. Create your first KB.
    kb new research
 
-2. Add one raw source. kb files it, then prints a Playbook.
-   printf 'hello world memory systems' > hello.txt
+2. Create and add one source. kb files it, then prints an Add playbook.
+   printf '%s\\n' 'hello world memory systems' > hello.txt
    kb add hello.txt
 
-3. Agent step: follow the printed Playbook.
-   Write the Memory in ${join(kbHome, "research", "memories")} and keep raw/ immutable.
+3. Agent step: give the complete printed playbook to your AI agent.
+   Playbook paths such as raw/... and memories/... are relative to ${kbRoot}.
 
-4. Search what the agent wrote.
+4. After the agent writes the Memory and index line, confirm and search.
+   kb status
    kb search "hello world"
 
-5. Check state and the Advisor's next suggestion.
-   kb status
-
 Rules of thumb:
-  kb does bookkeeping; the agent does meaning.
-  Raw sources stay in raw/. Memories are derivatives in memories/.
-  Start in b0. Enable search only when the Advisor suggests it.
-`);
-    return 0;
-  }
-
-  const entries = sortedRegistryEntries(registry);
-  const targetName = registry.defaultKb ?? entries[0]![0];
-  const targetPath = registry.kbs.get(targetName)!;
-  const config = await readKbConfig(targetPath);
-  const counts = await countKbFiles(targetPath);
-  const advisor = advisorSuggestions(config, counts);
-
-  process.stdout.write(`First run
-
-KB Home: ${kbHome}
-
-Known KBs:
-${renderRegistryLines(registry)}
-
-Suggested next step for ${targetName}:
-${renderStartNextStep(targetName, counts, advisor)}
-
-Hello-world loop:
-1. Create a KB when you need another project.
-   kb new research
-
-2. Add one raw source. kb files it, then prints a Playbook.
-   printf 'hello world memory systems' > hello.txt
-   kb add hello.txt
-
-3. Agent step: follow the printed Playbook.
-   Write the Memory in ${join(targetPath, "memories")} and keep raw/ immutable.
-
-4. Search what the agent wrote.
-   kb search "hello world"
-
-5. Check state and the Advisor's next suggestion.
-   kb status
-
-Rules of thumb:
-  kb does bookkeeping; the agent does meaning.
-  Raw sources stay in raw/. Memories are derivatives in memories/.
-  Start in b0. Enable search only when the Advisor suggests it.
+  kb start is optional and read-only; it only prints this text.
+  Input paths passed to kb add are relative to cwd or absolute.
+  Playbook paths are relative to the selected KB root.
+  kb does bookkeeping; the agent reads raw/, writes memories/, and updates index.md.
 `);
   return 0;
 }
@@ -605,13 +617,29 @@ async function createKb(args: string[], arm: string | null): Promise<number> {
 
   try {
     await mkdir(kbHome, { recursive: true });
-    await scaffoldKb(kbDir, name, selectedArm);
-    const becameDefault = await registerKb(name, kbDir);
-    process.stdout.write(`Created KB: ${name}
+    const result = await withFileLock(scaffoldLockPath(kbDir), `KB ${name} scaffold`, async () => {
+      if (await isCompleteKbRoot(kbDir)) {
+        await readKbConfig(kbDir);
+        if (await isRegisteredKb(name, kbDir)) {
+          const error = new Error("KB already exists") as NodeJS.ErrnoException;
+          error.code = "EEXIST";
+          throw error;
+        }
+        const becameDefault = await registerKb(name, kbDir);
+        return { kind: "recovered" as const, becameDefault };
+      }
+      await scaffoldKb(kbDir, name, selectedArm);
+      const becameDefault = await registerKb(name, kbDir);
+      return { kind: "created" as const, becameDefault };
+    });
+    process.stdout.write(`${result.kind === "created" ? "Created" : "Recovered"} KB: ${name}
 Path: ${kbDir}
-${becameDefault ? `Default: ${name}\n` : ""}Next: kb add <file-or-url>
+${result.becameDefault ? `Default: ${name}\n` : ""}Next: kb add <file-or-url>
 `);
   } catch (error) {
+    if (error instanceof CliError) {
+      throw error;
+    }
     if (isNodeError(error) && error.code === "EEXIST") {
       writeError(`KB already exists: ${kbDir}`);
       return EXIT_USAGE;
@@ -647,12 +675,29 @@ async function initKb(args: string[], arm: string | null): Promise<number> {
   }
 
   try {
-    await scaffoldKb(cwd, name, selectedArm);
-    await registerKb(name, cwd);
-    process.stdout.write(`Initialized KB in ${cwd}
+    const kind = await withFileLock(scaffoldLockPath(cwd), `KB ${name} scaffold`, async () => {
+      if (await isCompleteKbRoot(cwd)) {
+        await readKbConfig(cwd);
+        await registerKb(name, cwd);
+        return "adopted" as const;
+      }
+      await scaffoldKb(cwd, name, selectedArm);
+      await registerKb(name, cwd);
+      return "created" as const;
+    });
+    process.stdout.write(kind === "adopted"
+      ? `Registered existing KB: ${name}\nPath: ${cwd}\n`
+      : `Initialized KB in ${cwd}
 Next: kb add <file-or-url>
 `);
   } catch (error) {
+    if (error instanceof CliError) {
+      throw error;
+    }
+    if (error instanceof Error && error.message.startsWith("Registry name conflict:")) {
+      writeError(error.message);
+      return EXIT_USAGE;
+    }
     if (isNodeError(error) && error.code === "EEXIST") {
       writeError(`KB already exists: ${cwd}`);
       return EXIT_USAGE;
@@ -682,22 +727,15 @@ function validateArm(arm: string | null): string | null {
 }
 
 async function scaffoldKb(kbDir: string, name: string, arm = "b0"): Promise<void> {
-  if (await exists(join(kbDir, "kb.yaml"))) {
-    const error = new Error("KB already exists") as NodeJS.ErrnoException;
-    error.code = "EEXIST";
-    throw error;
-  }
   if (!(await exists(kbDir))) {
     await mkdir(kbDir);
   }
-  await Promise.all([
-    writeFile(join(kbDir, "kb.yaml"), kbYaml(arm, name), { flag: "wx" }),
-    writeFile(join(kbDir, "AGENTS.md"), agentsMd(), { flag: "wx" }),
-    writeFile(join(kbDir, "index.md"), indexMd(), { flag: "wx" }),
-    writeFile(join(kbDir, "log.md"), logMd(name), { flag: "wx" }),
-    mkdir(join(kbDir, "raw")),
-    mkdir(join(kbDir, "memories")),
-  ]);
+  await ensureScaffoldFile(join(kbDir, "kb.yaml"), kbYaml(arm, name));
+  await ensureScaffoldFile(join(kbDir, "AGENTS.md"), agentsMd());
+  await ensureScaffoldFile(join(kbDir, "index.md"), indexMd());
+  await ensureScaffoldFile(join(kbDir, "log.md"), logMd(name));
+  await ensureScaffoldDirectory(join(kbDir, "raw"));
+  await ensureScaffoldDirectory(join(kbDir, "memories"));
 
   if (!(await isInsideGitRepo(kbDir))) {
     const code = await runSilent("git", ["init"], kbDir);
@@ -705,6 +743,35 @@ async function scaffoldKb(kbDir: string, name: string, arm = "b0"): Promise<void
       throw new Error("git init failed");
     }
   }
+}
+
+async function ensureScaffoldFile(path: string, content: string): Promise<void> {
+  try {
+    await writeFile(path, content, { flag: "wx" });
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "EEXIST") {
+      throw error;
+    }
+    const metadata = await stat(path);
+    if (!metadata.isFile() || await readFile(path, "utf8") !== content) {
+      throw new Error(`damaged or conflicting scaffold artifact: ${path}`);
+    }
+  }
+}
+
+async function ensureScaffoldDirectory(path: string): Promise<void> {
+  try {
+    await mkdir(path);
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "EEXIST" || !(await stat(path)).isDirectory()) {
+      throw error;
+    }
+  }
+}
+
+function scaffoldLockPath(kbPath: string): string {
+  const root = dirname(registryPath());
+  return join(root, "scaffold-transactions", `${shortHash(resolve(kbPath))}.lock`);
 }
 
 async function listKbs(): Promise<number> {
@@ -725,9 +792,26 @@ async function statusKb(kbName: string | null): Promise<number> {
     return EXIT_USAGE;
   }
 
-  const config = await readKbConfig(target.path);
+  let config: KbConfig;
+  try {
+    config = await readKbConfig(target.path);
+  } catch (error) {
+    if (error instanceof CliError && error.exitCode === EXIT_DATAERR) {
+      process.stdout.write(`KB: ${target.name}\nPath: ${target.path}\nHealth: ${error.message}\n`);
+      return EXIT_DATAERR;
+    }
+    throw error;
+  }
   const counts = await countKbFiles(target.path);
-  const health = await healthSummary(target.path);
+  const inspection = await inspectHandoffs(target.path);
+  const structuralHealth = await healthSummary(target.path);
+  const health = structuralHealth !== "ok"
+    ? structuralHealth
+    : inspection.invalidMetadata.length > 0
+      ? `invalid pending handoff metadata: ${inspection.invalidMetadata[0]}`
+      : hasUnfinishedWork(inspection)
+        ? "unfinished work"
+        : "ok";
   const advisor = advisorSuggestions(config, counts);
 
   process.stdout.write(`KB: ${target.name}
@@ -739,7 +823,7 @@ Memories: ${counts.memories}
 Index entries: ${counts.indexEntries}
 Index size: ${counts.indexBytes} bytes
 Health: ${health}
-Advisor:
+${renderUnfinishedWork(target.name, inspection)}Advisor:
 ${renderAdvisor(advisor)}
 `);
   return 0;
@@ -757,21 +841,28 @@ async function enableKb(kbName: string | null, args: string[]): Promise<number> 
     return EXIT_USAGE;
   }
 
-  const config = await readKbConfig(target.path);
-  if (config.engineState === "enabled") {
-    process.stdout.write(`Search already enabled for ${target.name}.\n`);
+  return withFileLock(join(target.path, ".kb-state.lock"), `KB ${target.name} state`, async () => {
+    const config = await readKbConfig(target.path);
+    if (config.engineState === "enabled") {
+      process.stdout.write(`Search already enabled for ${target.name}.\n`);
+      return 0;
+    }
+    if (config.arm === "wiki") {
+      writeError("search enablement requires Arm b0; wiki curation was not changed. Arm migration is not available in v1.");
+      return EXIT_USAGE;
+    }
+
+    const enabled = await new BasicMemoryAdapter().enable(target.path, target.name);
+    if (!enabled.ok) {
+      writeError(`cannot enable search: ${enabled.message}`);
+      return EXIT_UNAVAILABLE;
+    }
+
+    const latest = await readKbConfig(target.path);
+    await writeKbConfig(target.path, { ...latest, ...enabled.value });
+    process.stdout.write(`Search enabled for ${target.name}. Arm: b1. Existing files unchanged.\n`);
     return 0;
-  }
-
-  const enabled = await new BasicMemoryAdapter().enable(target.path, target.name);
-  if (!enabled.ok) {
-    writeError(`cannot enable search: ${enabled.message}`);
-    return EXIT_UNAVAILABLE;
-  }
-
-  await writeKbConfig(target.path, { ...config, ...enabled.value });
-  process.stdout.write(`Search enabled for ${target.name}. Arm: b1. Existing files unchanged.\n`);
-  return 0;
+  });
 }
 
 async function searchKb(kbName: string | null, args: string[]): Promise<number> {
@@ -809,14 +900,23 @@ async function searchKb(kbName: string | null, args: string[]): Promise<number> 
     results = await searchFiles(target.path, query);
   }
 
+  results = await excludeUntouchedDraftResults(target.path, results);
+  const inspection = await inspectHandoffs(target.path);
   await appendLogEntry(target.path, "query", query);
 
-  process.stdout.write(renderSearchResults(target.name, query, results));
+  process.stdout.write(renderSearchResults(target.name, query, results, hasUnfinishedWork(inspection)));
   return 0;
 }
 
-async function addSource(kbName: string | null, args: string[]): Promise<number> {
-  if (args.length !== 1) {
+async function addSource(
+  kbName: string | null,
+  args: string[],
+  resumeRef: string | null,
+  complete: boolean,
+): Promise<number> {
+  if ((!complete && resumeRef === null && args.length !== 1)
+    || (resumeRef !== null && args.length !== 0)
+    || (complete && args.length !== 2)) {
     writeError("usage: kb add <file-or-url>");
     return EXIT_USAGE;
   }
@@ -826,6 +926,47 @@ async function addSource(kbName: string | null, args: string[]): Promise<number>
     writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
   }
+  const config = await readKbConfig(target.path);
+
+  if (resumeRef !== null) {
+    const record = await readPendingAdd(target.path, resumeRef);
+    if (record === null) {
+      writeError(`no pending Add handoff for ${resumeRef}`);
+      return EXIT_USAGE;
+    }
+    process.stdout.write(`Resuming pending Add\n\n${renderPendingAddPlaybook(record, target.name)}`);
+    return 0;
+  }
+
+  if (complete) {
+    const [rawRef, memoryRef] = args;
+    const record = await readPendingAdd(target.path, rawRef);
+    if (record === null) {
+      writeError(`no pending Add handoff for ${rawRef}`);
+      return EXIT_USAGE;
+    }
+    if (!isKbRef(target.path, rawRef, "raw") || !(await exists(join(target.path, rawRef)))) {
+      writeError(`cannot complete Add: Raw source not found: ${rawRef}`);
+      return EXIT_USAGE;
+    }
+    if (!isKbRef(target.path, memoryRef, "memories") || !(await exists(join(target.path, memoryRef)))) {
+      writeError(`cannot complete Add: Memory not found: ${memoryRef}`);
+      return EXIT_USAGE;
+    }
+    const indexRefs = new Set(
+      indexEntryLines(await readFile(join(target.path, "index.md"), "utf8"))
+        .map((line) => parseIndexLine(line)?.ref)
+        .filter((ref): ref is string => ref !== undefined),
+    );
+    if (!indexRefs.has(memoryRef)) {
+      writeError(`cannot complete Add: index.md does not reference ${memoryRef}`);
+      return EXIT_USAGE;
+    }
+    await rm(pendingAddPath(target.path, rawRef), { force: true });
+    await appendLogEntry(target.path, "handoff-complete", `add ${rawRef} -> ${memoryRef}`);
+    process.stdout.write(`Completed Add handoff: ${rawRef} -> ${memoryRef}\n`);
+    return 0;
+  }
 
   const input = args[0];
   const staged = isUrl(input) ? await stageUrlReference(target.path, input) : await stageFileSource(target.path, input);
@@ -833,14 +974,29 @@ async function addSource(kbName: string | null, args: string[]): Promise<number>
     return EXIT_USAGE;
   }
 
-  await appendLogEntry(target.path, "add", staged.rawFile);
-  const config = await readKbConfig(target.path);
-  process.stdout.write(config.arm === "wiki" ? wikiIngestPlaybook(staged) : ingestPlaybook(staged));
+  const rawRef = `raw/${staged.rawFile}`;
+  const existing = await readPendingAdd(target.path, rawRef);
+  const record: PendingAdd = existing ?? {
+    schemaVersion: 1,
+    kind: "add",
+    rawRef,
+    suggestedMemoryRef: `memories/${staged.memoryFile}`,
+    title: staged.title,
+    urlReference: staged.urlReference,
+    arm: config.arm,
+    createdAt: nowInstant(),
+  };
+  await writePendingAdd(target.path, record);
+  if (staged.created) {
+    await appendLogEntry(target.path, "add", staged.rawFile);
+  }
+  const playbook = renderPendingAddPlaybook(record, target.name);
+  process.stdout.write(staged.created ? playbook : `Raw source already present: raw/${staged.rawFile}\n\n${playbook}`);
   return 0;
 }
 
-async function createMemoryNote(kbName: string | null, args: string[]): Promise<number> {
-  if (args.length === 0) {
+async function createMemoryNote(kbName: string | null, args: string[], resumeRef: string | null): Promise<number> {
+  if ((resumeRef === null && args.length === 0) || (resumeRef !== null && args.length !== 0)) {
     writeError("usage: kb draft <title...>");
     return EXIT_USAGE;
   }
@@ -849,6 +1005,20 @@ async function createMemoryNote(kbName: string | null, args: string[]): Promise<
   if (target === null) {
     writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
     return EXIT_USAGE;
+  }
+
+  if (resumeRef !== null) {
+    if (!isKbRef(target.path, resumeRef, "memories") || !(await exists(join(target.path, resumeRef)))) {
+      writeError(`draft not found: ${resumeRef}`);
+      return EXIT_USAGE;
+    }
+    const text = await readFile(join(target.path, resumeRef), "utf8");
+    if (!isUntouchedDraft(text)) {
+      writeError(`draft has been edited: ${resumeRef}; run kb check --in ${target.name}`);
+      return EXIT_USAGE;
+    }
+    process.stdout.write(draftPlaybook(resumeRef, target.name));
+    return 0;
   }
 
   const title = args.join(" ").trim();
@@ -873,7 +1043,7 @@ async function createMemoryNote(kbName: string | null, args: string[]): Promise<
     throw error;
   }
 
-  process.stdout.write(`Created memories/${file}\n`);
+  process.stdout.write(`Created memories/${file}\n\n${draftPlaybook(`memories/${file}`, target.name)}`);
   return 0;
 }
 
@@ -922,7 +1092,7 @@ async function readMemory(kbName: string | null, args: string[]): Promise<number
   return 0;
 }
 
-async function reflectKb(kbName: string | null, args: string[]): Promise<number> {
+async function reflectKb(kbName: string | null, args: string[], complete: boolean): Promise<number> {
   if (args.length !== 0) {
     writeError("usage: kb reflect");
     return EXIT_USAGE;
@@ -934,13 +1104,48 @@ async function reflectKb(kbName: string | null, args: string[]): Promise<number>
     return EXIT_USAGE;
   }
 
-  const config = await readKbConfig(target.path);
-  const changed = await changedMemoriesSince(target.path, config.lastReflectAt);
+  return withFileLock(join(target.path, ".kb-state.lock"), `KB ${target.name} state`, async () => {
+  const pending = await readPendingReflect(target.path);
+  if (complete) {
+    if (pending === null) {
+      writeError(`no pending Reflect handoff; run \`kb reflect --in ${target.name}\` first`);
+      return EXIT_USAGE;
+    }
+    await writeLastReflectAt(target.path, pending.startedAt);
+    await appendLogEntry(target.path, "reflect", `${pending.memories.length} memories`);
+    await rm(pendingReflectPath(target.path), { force: true });
+    process.stdout.write(
+      `Completed Reflect handoff: ${pending.memories.length} ${pending.memories.length === 1 ? "Memory" : "Memories"}\n`
+      + `Checkpoint: ${pending.startedAt}\n`,
+    );
+    return 0;
+  }
+
+  if (pending !== null) {
+    process.stdout.write(`Resuming pending Reflect\n\n${reflectPlaybook(pending.memories, target.name, true)}`);
+    return 0;
+  }
+
   const now = nowInstant();
-  await writeLastReflectAt(target.path, now);
-  await appendLogEntry(target.path, "reflect", `${changed.length} memories`);
-  process.stdout.write(reflectPlaybook(changed));
+  const config = await readKbConfig(target.path);
+  const changed = await changedMemoriesSince(target.path, config.lastReflectAt, now);
+  if (changed.length === 0) {
+    await writeLastReflectAt(target.path, now);
+    await appendLogEntry(target.path, "reflect", "0 memories");
+    process.stdout.write(reflectPlaybook(changed, target.name, false));
+    return 0;
+  }
+  const record: PendingReflect = {
+    schemaVersion: 1,
+    kind: "reflect",
+    previousReflectAt: config.lastReflectAt,
+    startedAt: now,
+    memories: changed.map(({ ref, title }) => ({ ref, title })),
+  };
+  await writeJsonAtomic(pendingReflectPath(target.path), record);
+  process.stdout.write(reflectPlaybook(record.memories, target.name, true));
   return 0;
+  });
 }
 
 async function checkKb(kbName: string | null, args: string[]): Promise<number> {
@@ -1007,26 +1212,204 @@ type StagedSource = {
   memoryFile: string;
   title: string;
   urlReference: boolean;
+  created: boolean;
 };
 
-async function stageFileSource(kbPath: string, input: string): Promise<StagedSource | null> {
+type PendingAdd = {
+  schemaVersion: 1;
+  kind: "add";
+  rawRef: string;
+  suggestedMemoryRef: string;
+  title: string;
+  urlReference: boolean;
+  arm: string;
+  createdAt: string;
+};
+
+type PendingReflect = {
+  schemaVersion: 1;
+  kind: "reflect";
+  previousReflectAt: string | null;
+  startedAt: string;
+  memories: Array<{ ref: string; title: string }>;
+};
+
+type HandoffInspection = {
+  adds: Array<{
+    record: PendingAdd;
+    state: "raw-missing" | "memory-missing" | "index-missing" | "ready-to-confirm";
+  }>;
+  drafts: string[];
+  reflect: PendingReflect | null;
+  invalidMetadata: string[];
+};
+
+function pendingAddPath(kbPath: string, rawRef: string): string {
+  return join(kbPath, ".kb", "pending", "add", `${shortHash(rawRef)}.json`);
+}
+
+function pendingReflectPath(kbPath: string): string {
+  return join(kbPath, ".kb", "pending", "reflect.json");
+}
+
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  await writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function writeTextAtomic(path: string, value: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
-    const sourcePath = resolve(input);
+    await writeFile(temp, value, { flag: "wx", mode: 0o600 });
+    await rename(temp, path);
+  } finally {
+    await rm(temp, { force: true });
+  }
+}
+
+async function writePendingAdd(kbPath: string, record: PendingAdd): Promise<void> {
+  await writeJsonAtomic(pendingAddPath(kbPath, record.rawRef), record);
+}
+
+async function readPendingAdd(kbPath: string, rawRef: string): Promise<PendingAdd | null> {
+  try {
+    return JSON.parse(await readFile(pendingAddPath(kbPath, rawRef), "utf8")) as PendingAdd;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function readPendingReflect(kbPath: string): Promise<PendingReflect | null> {
+  try {
+    return JSON.parse(await readFile(pendingReflectPath(kbPath), "utf8")) as PendingReflect;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function inspectHandoffs(kbPath: string): Promise<HandoffInspection> {
+  const adds: HandoffInspection["adds"] = [];
+  const drafts: string[] = [];
+  const invalidMetadata: string[] = [];
+  const indexRefs = new Set(
+    indexEntryLines(await readOptionalFile(join(kbPath, "index.md")))
+      .map((line) => parseIndexLine(line)?.ref)
+      .filter((ref): ref is string => ref !== undefined),
+  );
+  const addDir = join(kbPath, ".kb", "pending", "add");
+
+  try {
+    for (const entry of await readdir(addDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
+      const ref = `.kb/pending/add/${entry.name}`;
+      try {
+        const record = JSON.parse(await readFile(join(addDir, entry.name), "utf8")) as PendingAdd;
+        if (record.schemaVersion !== 1 || record.kind !== "add" || typeof record.rawRef !== "string"
+          || typeof record.suggestedMemoryRef !== "string") {
+          invalidMetadata.push(ref);
+          continue;
+        }
+        const rawExists = await exists(join(kbPath, record.rawRef));
+        const memoryExists = await exists(join(kbPath, record.suggestedMemoryRef));
+        const state = !rawExists
+          ? "raw-missing"
+          : !memoryExists
+            ? "memory-missing"
+            : !indexRefs.has(record.suggestedMemoryRef)
+              ? "index-missing"
+              : "ready-to-confirm";
+        adds.push({ record, state });
+      } catch {
+        invalidMetadata.push(ref);
+      }
+    }
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  try {
+    for (const entry of await readdir(join(kbPath, "memories"), { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) {
+        continue;
+      }
+      const ref = `memories/${entry.name}`;
+      const text = await readFile(join(kbPath, ref), "utf8");
+      if (isUntouchedDraft(text)) {
+        drafts.push(ref);
+      }
+    }
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  let reflect: PendingReflect | null = null;
+  try {
+    reflect = await readPendingReflect(kbPath);
+    if (reflect !== null && (reflect.schemaVersion !== 1 || reflect.kind !== "reflect"
+      || !Array.isArray(reflect.memories))) {
+      invalidMetadata.push(".kb/pending/reflect.json");
+      reflect = null;
+    }
+  } catch {
+    invalidMetadata.push(".kb/pending/reflect.json");
+  }
+
+  adds.sort((a, b) => a.record.rawRef.localeCompare(b.record.rawRef));
+  drafts.sort();
+  return { adds, drafts, reflect, invalidMetadata };
+}
+
+function isUntouchedDraft(text: string): boolean {
+  const title = readYamlScalar(text, "title");
+  const permalink = readYamlScalar(text, "permalink");
+  return title !== null && permalink !== null && text === memoryTemplate(title, permalink);
+}
+
+function hasUnfinishedWork(inspection: HandoffInspection): boolean {
+  return inspection.adds.length > 0 || inspection.drafts.length > 0 || inspection.reflect !== null
+    || inspection.invalidMetadata.length > 0;
+}
+
+async function stageFileSource(kbPath: string, input: string): Promise<StagedSource | null> {
+  const sourcePath = resolve(input);
+  try {
+    const metadata = await stat(sourcePath);
+    if (!metadata.isFile()) {
+      writeError(`source is not a file: ${input}`);
+      return null;
+    }
     const bytes = await readFile(sourcePath);
     const parsed = parse(sourcePath);
-    const title = titleFromSlug(slugify(parsed.name));
+    const identity = sourceMemoryIdentity(parsed.name);
     const hash = shortHash(bytes);
     const rawFile = `${slugify(parsed.name)}-${hash}${parsed.ext}`;
-    await writeRawIfMissing(kbPath, rawFile, bytes);
+    const created = await writeRawIfMissing(kbPath, rawFile, bytes);
     return {
       rawFile,
-      memoryFile: `${slugify(parsed.name)}.md`,
-      title,
+      memoryFile: `${identity.memoryStem}.md`,
+      title: identity.title,
       urlReference: false,
+      created,
     };
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       writeError(`source not found: ${input}`);
+      return null;
+    }
+    if (isNodeError(error) && (error.code === "EACCES" || error.code === "EPERM")) {
+      writeError(`cannot read source: ${input}`);
       return null;
     }
     throw error;
@@ -1043,21 +1426,27 @@ url: ${url}
 
 v1 behavior: this is a URL reference only, not a full HTML archive.
 `;
-  await writeRawIfMissing(kbPath, rawFile, content);
+  const created = await writeRawIfMissing(kbPath, rawFile, content);
   return {
     rawFile,
     memoryFile: `${slug}.md`,
     title: titleFromSlug(slug),
     urlReference: true,
+    created,
   };
 }
 
-async function writeRawIfMissing(kbPath: string, rawFile: string, content: string | Buffer): Promise<void> {
+async function writeRawIfMissing(kbPath: string, rawFile: string, content: string | Buffer): Promise<boolean> {
   const path = join(kbPath, "raw", rawFile);
-  if (await exists(path)) {
-    return;
+  try {
+    await writeFile(path, content, { flag: "wx" });
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "EEXIST") {
+      return false;
+    }
+    throw error;
   }
-  await writeFile(path, content, { flag: "wx" });
 }
 
 async function appendLogEntry(kbPath: string, verb: string, title: string): Promise<void> {
@@ -1073,18 +1462,42 @@ type KbConfig = {
 
 async function readKbConfig(kbPath: string): Promise<KbConfig> {
   const text = await readFile(join(kbPath, "kb.yaml"), "utf8");
-  const lastReflectAt = readYamlScalar(text, "lastReflectAt");
-  const project = readYamlScalar(text, "project");
-  return {
-    arm: readYamlScalar(text, "arm") ?? "unknown",
-    engineState: readYamlScalar(text, "state") ?? "unknown",
-    lastReflectAt: lastReflectAt === null || lastReflectAt === "null" ? null : lastReflectAt,
-    engineProject: project === "null" ? null : project,
+  const scalar = (pattern: RegExp, label: string): string => {
+    const matches = [...text.matchAll(pattern)];
+    if (matches.length !== 1 || matches[0]?.[1] === undefined) {
+      throw new CliError(`invalid kb.yaml: expected exactly one ${label}`, EXIT_DATAERR);
+    }
+    return matches[0][1].trim();
   };
+  if (scalar(/^schemaVersion:\s*(.+)$/gm, "schemaVersion") !== "1") {
+    throw new CliError("invalid kb.yaml: unsupported schemaVersion", EXIT_DATAERR);
+  }
+  if (scalar(/^formatVersion:\s*(.+)$/gm, "formatVersion") !== "basic-memory-note-v1") {
+    throw new CliError("invalid kb.yaml: unsupported formatVersion", EXIT_DATAERR);
+  }
+  const arm = scalar(/^arm:\s*(.+)$/gm, "arm");
+  const engineState = scalar(/^ {4}state:\s*(.+)$/gm, "engine.basicMemory.state");
+  const projectValue = scalar(/^ {4}project:\s*(.+)$/gm, "engine.basicMemory.project");
+  const reflectValue = scalar(/^lastReflectAt:\s*(.+)$/gm, "lastReflectAt");
+  const engineProject = projectValue === "null" ? null : projectValue;
+  const lastReflectAt = reflectValue === "null" ? null : reflectValue;
+  const validCombination = (arm === "wiki" || arm === "b0")
+    ? engineState === "disabled" && engineProject === null
+    : arm === "b1" && engineState === "enabled" && engineProject !== null && engineProject.length > 0;
+  if (!validCombination) {
+    throw new CliError("invalid kb.yaml: Arm and search engine state are inconsistent", EXIT_DATAERR);
+  }
+  if (lastReflectAt !== null) {
+    const parsed = new Date(lastReflectAt);
+    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== lastReflectAt) {
+      throw new CliError("invalid kb.yaml: lastReflectAt must be a canonical ISO instant or null", EXIT_DATAERR);
+    }
+  }
+  return { arm, engineState, lastReflectAt, engineProject };
 }
 
 async function writeKbConfig(kbPath: string, config: KbConfig): Promise<void> {
-  await writeFile(join(kbPath, "kb.yaml"), `schemaVersion: 1
+  await writeTextAtomic(join(kbPath, "kb.yaml"), `schemaVersion: 1
 formatVersion: basic-memory-note-v1
 arm: ${config.arm}
 engine:
@@ -1201,6 +1614,9 @@ async function searchFiles(kbPath: string, query: string): Promise<SearchResult[
     }
     const ref = `memories/${entry.name}`;
     const text = await readFile(join(kbPath, ref), "utf8");
+    if (isUntouchedDraft(text)) {
+      continue;
+    }
     const score = scoreText(text, terms);
     if (score === 0) {
       continue;
@@ -1228,10 +1644,31 @@ async function searchFiles(kbPath: string, query: string): Promise<SearchResult[
   return [...byRef.values()].sort((a, b) => b.score - a.score || a.ref.localeCompare(b.ref));
 }
 
-function renderSearchResults(kbName: string, query: string, results: SearchResult[]): string {
+async function excludeUntouchedDraftResults(kbPath: string, results: SearchResult[]): Promise<SearchResult[]> {
+  const filtered: SearchResult[] = [];
+  for (const result of results) {
+    if (result.ref.startsWith("memories/")) {
+      const text = await readOptionalFile(join(kbPath, result.ref));
+      if (text.length > 0 && isUntouchedDraft(text)) {
+        continue;
+      }
+    }
+    filtered.push(result);
+  }
+  return filtered;
+}
+
+function renderSearchResults(
+  kbName: string,
+  query: string,
+  results: SearchResult[],
+  unfinished = false,
+): string {
   const lines = [`Search results`, `KB: ${kbName}`, `Query: ${query}`, `Results: ${results.length}`];
   if (results.length === 0) {
-    lines.push("Next: try broader terms, check index.md, or kb status for the Advisor.");
+    lines.push(unfinished
+      ? `Next: this KB has unfinished work. Run \`kb status --in ${kbName}\` for exact recovery commands.`
+      : "Next: try broader terms, check index.md, or kb status for the Advisor.");
     return `${lines.join("\n")}\n`;
   }
 
@@ -1307,21 +1744,26 @@ async function listMemories(kbPath: string): Promise<MemoryInfo[]> {
   return memories.sort((a, b) => a.ref.localeCompare(b.ref));
 }
 
-async function changedMemoriesSince(kbPath: string, lastReflectAt: string | null): Promise<MemoryInfo[]> {
+async function changedMemoriesSince(
+  kbPath: string,
+  lastReflectAt: string | null,
+  through: string | null = null,
+): Promise<MemoryInfo[]> {
   const cutoff = lastReflectAt === null ? -Infinity : Date.parse(lastReflectAt);
-  return (await listMemories(kbPath)).filter((memory) => memory.mtimeMs > cutoff);
+  const upper = through === null ? Infinity : Date.parse(through);
+  return (await listMemories(kbPath)).filter((memory) => memory.mtimeMs > cutoff && memory.mtimeMs <= upper);
 }
 
 async function writeLastReflectAt(kbPath: string, value: string): Promise<void> {
-  const path = join(kbPath, "kb.yaml");
-  const text = await readFile(path, "utf8");
-  const next = /^lastReflectAt: .+$/m.test(text)
-    ? text.replace(/^lastReflectAt: .+$/m, `lastReflectAt: ${value}`)
-    : `${text.trimEnd()}\nlastReflectAt: ${value}\n`;
-  await writeFile(path, next);
+  const config = await readKbConfig(kbPath);
+  await writeKbConfig(kbPath, { ...config, lastReflectAt: value });
 }
 
-function reflectPlaybook(changed: MemoryInfo[]): string {
+function reflectPlaybook(
+  changed: Array<{ ref: string; title: string }>,
+  targetName: string,
+  pending: boolean,
+): string {
   const lines = ["Reflect playbook", `Changed since last reflect: ${changed.length}`];
   if (changed.length > 0) {
     lines.push(...changed.map((memory) => `- ${memory.ref} | ${memory.title}`));
@@ -1334,6 +1776,15 @@ function reflectPlaybook(changed: MemoryInfo[]): string {
     "3. Add or update index.md lines only for Memories you actually create or revise.",
     "4. Do not claim contradiction detection, stale-fact judgment, or semantic consolidation as guaranteed by kb reflect.",
   );
+  if (pending) {
+    lines.push(
+      "5. When the Agent half is complete, run:",
+      `   kb reflect --complete --in ${targetName}`,
+      "",
+      "If this output is lost, run:",
+      `  kb reflect --in ${targetName}`,
+    );
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -1403,7 +1854,20 @@ function renderCandidateLines(lines: string[]): string {
   return lines.length === 0 ? "- None\n" : `${lines.map((line) => `- ${line}`).join("\n")}\n`;
 }
 
-function ingestPlaybook(staged: StagedSource): string {
+function renderPendingAddPlaybook(record: PendingAdd, targetName: string): string {
+  const staged: StagedSource = {
+    rawFile: record.rawRef.replace(/^raw\//, ""),
+    memoryFile: record.suggestedMemoryRef.replace(/^memories\//, ""),
+    title: record.title,
+    urlReference: record.urlReference,
+    created: false,
+  };
+  return record.arm === "wiki"
+    ? wikiIngestPlaybook(staged, targetName)
+    : ingestPlaybook(staged, targetName);
+}
+
+function ingestPlaybook(staged: StagedSource, targetName: string): string {
   const rawRef = `raw/${staged.rawFile}`;
   const memoryRef = `memories/${staged.memoryFile}`;
   const urlBehavior = staged.urlReference
@@ -1425,10 +1889,15 @@ Agent half:
 5. ${formatLines[2]}
 6. ${formatLines[3]}
 7. ${formatLines[4]}
+8. When the Memory exists and its index.md line is present, run:
+   kb add --complete ${rawRef} ${memoryRef} --in ${targetName}
+
+If this output is lost, run:
+  kb add --resume ${rawRef} --in ${targetName}
 `;
 }
 
-function wikiIngestPlaybook(staged: StagedSource): string {
+function wikiIngestPlaybook(staged: StagedSource, targetName: string): string {
   const rawRef = `raw/${staged.rawFile}`;
   const memoryRef = `memories/${staged.memoryFile}`;
   const urlBehavior = staged.urlReference
@@ -1446,6 +1915,23 @@ Agent half:
 3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
 4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
 5. Add or update one index.md line: ${indexLine(memoryRef, staged.title)}
+6. When the Memory exists and its index.md line is present, run:
+   kb add --complete ${rawRef} ${memoryRef} --in ${targetName}
+
+If this output is lost, run:
+  kb add --resume ${rawRef} --in ${targetName}
+`;
+}
+
+function draftPlaybook(memoryRef: string, targetName: string): string {
+  return `Draft playbook
+Agent half:
+1. Replace every TODO and placeholder relation in ${memoryRef}.
+2. Add one index.md line for ${memoryRef}.
+3. Recheck with: kb status --in ${targetName}
+
+If this output is lost, run:
+  kb draft --resume ${memoryRef} --in ${targetName}
 `;
 }
 
@@ -1559,6 +2045,24 @@ function slugify(value: string): string {
   return slug.length === 0 ? "untitled" : slug;
 }
 
+function sourceMemoryIdentity(stem: string): { memoryStem: string; title: string } {
+  const baseSlug = slugify(stem);
+  if (/^[\x00-\x7F]*$/.test(stem)) {
+    return { memoryStem: baseSlug, title: titleFromSlug(baseSlug) };
+  }
+  const normalized = stem.normalize("NFC");
+  return {
+    memoryStem: `${baseSlug}-${shortHash(normalized)}`,
+    title: normalized,
+  };
+}
+
+function isKbRef(kbPath: string, ref: string, directory: "raw" | "memories"): boolean {
+  const base = resolve(kbPath, directory);
+  const candidate = resolve(kbPath, ref);
+  return candidate.startsWith(`${base}/`);
+}
+
 function titleFromSlug(slug: string): string {
   return slug.split("-").filter(Boolean).map((word) => `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}`).join(" ");
 }
@@ -1601,6 +2105,36 @@ function renderAdvisor(suggestions: string[]): string {
     return "- No suggestions.";
   }
   return suggestions.map((suggestion) => `- ${suggestion}`).join("\n");
+}
+
+function renderUnfinishedWork(targetName: string, inspection: HandoffInspection): string {
+  const lines: string[] = [];
+  for (const { record, state } of inspection.adds) {
+    const stateText = state === "raw-missing"
+      ? `Raw source missing: ${record.rawRef}`
+      : state === "memory-missing"
+        ? `Memory missing: ${record.suggestedMemoryRef}`
+        : state === "index-missing"
+          ? `Memory not cataloged: ${record.suggestedMemoryRef}`
+          : "Ready for completion confirmation";
+    lines.push(`- Add: ${record.rawRef}`);
+    lines.push(`  State: ${stateText}`);
+    lines.push(`  Resume: kb add --resume ${record.rawRef} --in ${targetName}`);
+  }
+  for (const ref of inspection.drafts) {
+    lines.push(`- Draft: ${ref}`);
+    lines.push("  State: Untouched TODO template");
+    lines.push(`  Resume: kb draft --resume ${ref} --in ${targetName}`);
+  }
+  if (inspection.reflect !== null) {
+    lines.push(`- Reflect: ${inspection.reflect.memories.length} saved ${inspection.reflect.memories.length === 1 ? "Memory" : "Memories"}`);
+    lines.push(`  Resume: kb reflect --in ${targetName}`);
+  }
+  if (lines.length === 0) {
+    return "";
+  }
+  const count = inspection.adds.length + inspection.drafts.length + (inspection.reflect === null ? 0 : 1);
+  return `Unfinished work: ${count}\n${lines.join("\n")}\n`;
 }
 
 function armLabel(arm: string): string {
@@ -1672,20 +2206,65 @@ function renderStartNextStep(name: string, counts: KbCounts, advisor: string[]):
 }
 
 async function registerKb(name: string, path: string): Promise<boolean> {
+  return withFileLock(`${registryPath()}.lock`, "Registry", async () => {
+    const registry = await loadRegistryUnlocked(true);
+    const existing = registry.kbs.get(name);
+    if (existing !== undefined && resolve(existing) !== resolve(path)) {
+      throw new Error(`Registry name conflict: ${name} already points to ${existing}`);
+    }
+    const becameDefault = registry.defaultKb === null;
+    registry.kbs.set(name, path);
+    registry.defaultKb ??= name;
+    await writeRegistry(registry);
+    return becameDefault || registry.defaultKb === name && existing === path;
+  });
+}
+
+async function isRegisteredKb(name: string, path: string): Promise<boolean> {
   const registry = await loadRegistry();
-  const becameDefault = registry.defaultKb === null || (registry.defaultKb === name && registry.kbs.size === 1 && registry.kbs.has(name));
-  registry.kbs.set(name, path);
-  registry.defaultKb ??= name;
-  await writeRegistry(registry);
-  return becameDefault;
+  const existing = registry.kbs.get(name);
+  return existing !== undefined && resolve(existing) === resolve(path);
+}
+
+async function isCompleteKbRoot(path: string): Promise<boolean> {
+  try {
+    const [config, agents, index, log, raw, memories] = await Promise.all([
+      stat(join(path, "kb.yaml")),
+      stat(join(path, "AGENTS.md")),
+      stat(join(path, "index.md")),
+      stat(join(path, "log.md")),
+      stat(join(path, "raw")),
+      stat(join(path, "memories")),
+    ]);
+    return config.isFile() && agents.isFile() && index.isFile() && log.isFile()
+      && raw.isDirectory() && memories.isDirectory();
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function loadRegistry(): Promise<Registry> {
-  const path = registryPath();
   try {
-    return parseRegistry(await readFile(path, "utf8"));
+    return await loadRegistryUnlocked(false);
   } catch (error) {
     if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  return withFileLock(`${registryPath()}.lock`, "Registry", () => loadRegistryUnlocked(true));
+}
+
+async function loadRegistryUnlocked(rebuild: boolean): Promise<Registry> {
+  try {
+    return parseRegistry(await readFile(registryPath(), "utf8"));
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
+    if (!rebuild) {
       throw error;
     }
   }
@@ -1724,12 +2303,11 @@ function parseRegistry(text: string): Registry {
 }
 
 async function writeRegistry(registry: Registry): Promise<void> {
-  await mkdir(dirname(registryPath()), { recursive: true });
   const lines = [`default: ${registry.defaultKb ?? "null"}`, "kbs:"];
   for (const [name, path] of [...registry.kbs.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${name}: ${path}`);
   }
-  await writeFile(registryPath(), `${lines.join("\n")}\n`);
+  await writeTextAtomic(registryPath(), `${lines.join("\n")}\n`);
 }
 
 async function scanKbHome(): Promise<Registry> {
@@ -1751,8 +2329,8 @@ async function scanKbHome(): Promise<Registry> {
 }
 
 async function resolveTargetKb(kbName: string | null): Promise<{ name: string; path: string } | null> {
-  const registry = await loadRegistry();
   if (kbName !== null) {
+    const registry = await loadRegistry();
     const path = registry.kbs.get(kbName);
     return path === undefined ? null : { name: kbName, path };
   }
@@ -1762,6 +2340,7 @@ async function resolveTargetKb(kbName: string | null): Promise<{ name: string; p
     return cwdKb;
   }
 
+  const registry = await loadRegistry();
   if (registry.defaultKb !== null) {
     const path = registry.kbs.get(registry.defaultKb);
     if (path !== undefined) {
@@ -1780,11 +2359,37 @@ async function findContainingKb(start: string): Promise<{ name: string; path: st
     if (await exists(join(current, "kb.yaml"))) {
       return { name: basename(current), path: current };
     }
+    if (await hasDamagedKbSignature(current)) {
+      throw new CliError(
+        `damaged containing KB at ${current}: missing kb.yaml; restore it or run \`cd ${current} && kb init\` to recover`,
+      );
+    }
     if (current === root) {
       return null;
     }
     current = dirname(current);
   }
+}
+
+async function hasDamagedKbSignature(path: string): Promise<boolean> {
+  const entries: Array<[string, "file" | "directory"]> = [
+    ["AGENTS.md", "file"],
+    ["index.md", "file"],
+    ["log.md", "file"],
+    ["raw", "directory"],
+    ["memories", "directory"],
+  ];
+  for (const [entry, kind] of entries) {
+    try {
+      const metadata = await stat(join(path, entry));
+      if (kind === "file" ? !metadata.isFile() : !metadata.isDirectory()) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 function registryPath(): string {
@@ -1798,7 +2403,22 @@ async function runSilent(cmd: string, args: string[], cwd: string): Promise<numb
       stdout: "ignore",
       stderr: "ignore",
     });
-    return await proc.exited;
+    let interrupted: NodeJS.Signals | null = null;
+    const forward = (signal: NodeJS.Signals) => {
+      interrupted = signal;
+      proc.kill(signal);
+    };
+    const onInt = () => forward("SIGINT");
+    const onTerm = () => forward("SIGTERM");
+    process.once("SIGINT", onInt);
+    process.once("SIGTERM", onTerm);
+    try {
+      const code = await proc.exited;
+      return interrupted === null ? code : interrupted === "SIGINT" ? 130 : 143;
+    } finally {
+      process.off("SIGINT", onInt);
+      process.off("SIGTERM", onTerm);
+    }
   } catch {
     return 127;
   }

@@ -1,6 +1,6 @@
 {
   "name": "@tylerjnewman/kb",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent-first CLI for local markdown knowledge bases.",
   "keywords": [
     "knowledge-base",

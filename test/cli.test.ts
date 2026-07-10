@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { INDEX_LINE_FORMAT, indexLine } from "../src/memory-format";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
+const packageVersion = (await Bun.file(resolve(import.meta.dir, "../package.json")).json() as { version: string }).version;
+
 let harness: KbHarness;
 
 beforeEach(async () => {
@@ -45,7 +47,7 @@ test("kb --version exits 0 and writes only the version to stdout", async () => {
 
   expect(result).toEqual({
     code: 0,
-    stdout: "kb 0.1.0\n",
+    stdout: `kb ${packageVersion}\n`,
     stderr: "",
   });
 });
@@ -56,7 +58,7 @@ test("kb -V is version and bare -v is not a public alias", async () => {
 
   expect(version).toEqual({
     code: 0,
-    stdout: "kb 0.1.0\n",
+    stdout: `kb ${packageVersion}\n`,
     stderr: "",
   });
   expect(verbose).toEqual({
@@ -71,7 +73,7 @@ test("global --kb flag is accepted before a command is routed", async () => {
 
   expect(result).toEqual({
     code: 0,
-    stdout: "kb 0.1.0\n",
+    stdout: `kb ${packageVersion}\n`,
     stderr: "",
   });
 });
@@ -146,8 +148,8 @@ test("kb start on an empty environment prints create-your-first guidance", async
   expect(result.stdout).toContain("1. Create your first KB.");
   expect(result.stdout).toContain("kb new research");
   expect(result.stdout).toContain("kb add hello.txt");
-  expect(result.stdout).toContain("Agent step: follow the printed Playbook.");
-  expect(result.stdout).toContain(`Write the Memory in ${join(harness.home, "kb", "research", "memories")}`);
+  expect(result.stdout).toContain("Agent step: give the complete printed playbook to your AI agent.");
+  expect(result.stdout).toContain(`relative to ${join(harness.home, "kb", "research")}`);
   expect(result.stdout).toContain('kb search "hello world"');
   expect(result.stdout).toContain("kb status");
 });
@@ -165,10 +167,10 @@ Usage:
   kb start
 
 What it teaches:
-  new -> add -> agent writes Memory from the playbook -> search -> status
+  new -> add an existing source -> agent follows the playbook -> status/search
 
 Rules of thumb:
-  Prints a first-run walkthrough; does not modify files.
+  Optional and read-only: prints text; does not create or change files.
 `,
     stderr: "",
   });
@@ -372,7 +374,7 @@ test("kb list shows all KBs and the default", async () => {
   });
 });
 
-test("kb start with an existing KB lists it and suggests the next step", async () => {
+test("kb start remains a stable read-only walkthrough when KBs exist", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
   await writeFile(join(kbDir, "index.md"), indexWithEntries(3));
@@ -381,12 +383,10 @@ test("kb start with an existing KB lists it and suggests the next step", async (
 
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
-  expect(result.stdout).toContain("Known KBs:\n* research ");
-  expect(result.stdout).toContain(kbDir);
-  expect(result.stdout).toContain("Suggested next step for research:");
-  expect(result.stdout).toContain("- Try `kb enable search`: 3 index entries make hybrid search more useful than plain file search.");
+  expect(result.stdout).toContain("First run");
   expect(result.stdout).toContain("kb add hello.txt");
-  expect(result.stdout).toContain(`Write the Memory in ${join(kbDir, "memories")}`);
+  expect(result.stdout).toContain("kb start is optional and read-only");
+  expect(result.stdout).not.toContain("Known KBs:");
 });
 
 test("--kb resolves from an unrelated cwd and missing targets fail clearly", async () => {
@@ -540,6 +540,11 @@ Agent half:
 5. Extract observations as "- [category] fact #tag".
 6. Extract relations as "- relates_to [[Target]]".
 7. Add or update one index.md line: - [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>
+8. When the Memory exists and its index.md line is present, run:
+   kb add --complete raw/${rawFiles[0]} memories/source.md --in research
+
+If this output is lost, run:
+  kb add --resume raw/${rawFiles[0]} --in research
 `);
 });
 
@@ -584,6 +589,11 @@ Agent half:
 3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
 4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
 5. Add or update one index.md line: - [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>
+6. When the Memory exists and its index.md line is present, run:
+   kb add --complete raw/${rawFile} memories/source.md --in wiki-research
+
+If this output is lost, run:
+  kb add --resume raw/${rawFile} --in wiki-research
 `,
     stderr: "",
   });
@@ -595,11 +605,10 @@ test("kb draft <title> creates a Basic Memory-compatible memory template", async
   const result = await harness.runKb(["draft", "Example Memory", "--kb", "research"]);
   const memory = await readFile(join(harness.home, "kb", "research", "memories", "example-memory.md"), "utf8");
 
-  expect(result).toEqual({
-    code: 0,
-    stdout: "Created memories/example-memory.md\n",
-    stderr: "",
-  });
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toContain("Created memories/example-memory.md");
+  expect(result.stdout).toContain("kb draft --resume memories/example-memory.md --in research");
   expect(memory).toContain(`---
 title: Example Memory
 type: note
@@ -616,11 +625,10 @@ test("kb note remains a hidden alias for draft", async () => {
 
   const result = await harness.runKb(["note", "Alias Memory", "--in", "research"]);
 
-  expect(result).toEqual({
-    code: 0,
-    stdout: "Created memories/alias-memory.md\n",
-    stderr: "",
-  });
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toContain("Created memories/alias-memory.md");
+  expect(result.stdout).toContain("kb draft --resume memories/alias-memory.md --in research");
   expect(await readFile(join(harness.home, "kb", "research", "memories", "alias-memory.md"), "utf8")).toContain("title: Alias Memory");
 });
 
@@ -1068,11 +1076,9 @@ test("engineless loop new add draft search read status works with no Engine inst
   expect((await harness.runKb(["new", "research"])).code).toBe(0);
   const added = await harness.runKb(["add", source, "--kb", "research"]);
   expect(added.code).toBe(0);
-  expect(await harness.runKb(["draft", "Loop Memory", "--kb", "research"])).toEqual({
-    code: 0,
-    stdout: "Created memories/loop-memory.md\n",
-    stderr: "",
-  });
+  const drafted = await harness.runKb(["draft", "Loop Memory", "--kb", "research"]);
+  expect(drafted.code).toBe(0);
+  expect(drafted.stdout).toContain("Created memories/loop-memory.md");
 
   const kbDir = join(harness.home, "kb", "research");
   await writeFile(join(kbDir, "memories", "loop-memory.md"), `---
@@ -1154,11 +1160,19 @@ Agent half:
 2. Write any useful cross-memory synthesis back into memories/ as Basic Memory-compatible Memories.
 3. Add or update index.md lines only for Memories you actually create or revise.
 4. Do not claim contradiction detection, stale-fact judgment, or semantic consolidation as guaranteed by kb reflect.
+5. When the Agent half is complete, run:
+   kb reflect --complete --in research
+
+If this output is lost, run:
+  kb reflect --in research
 `,
     stderr: "",
   });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("lastReflectAt: 2026-07-01T00:00:00.000Z");
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).not.toContain("reflect |");
+  expect((await harness.runKb(["reflect", "--complete", "--in", "research"])).code).toBe(0);
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("lastReflectAt: 2026-07-07T12:00:00.000Z");
-  expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("## [2026-07-07] reflect | 1 memories");
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("## [2026-07-10] reflect | 1 memories");
 });
 
 test("kb check reports deterministic cleanup candidates and mutates nothing", async () => {
@@ -1304,11 +1318,17 @@ test("Advisor suggests reflect only after the threshold elapses", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
   await writeMemory(kbDir, "alpha.md", "Alpha", "alpha");
+  await utimes(
+    join(kbDir, "memories", "alpha.md"),
+    new Date("2026-07-06T12:00:00.000Z"),
+    new Date("2026-07-06T12:00:00.000Z"),
+  );
 
   const reflected = await harness.run("kb", ["reflect", "--kb", "research"], {
     env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
   });
   expect(reflected.code).toBe(0);
+  expect((await harness.runKb(["reflect", "--complete", "--in", "research"])).code).toBe(0);
 
   const fresh = await harness.run("kb", ["status", "--kb", "research"], {
     env: { KB_NOW: "2026-07-08T12:00:00.000Z" },

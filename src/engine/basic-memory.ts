@@ -98,12 +98,30 @@ async function runExternal(cmd: string, args: string[], cwd: string): Promise<Ex
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    return { code, stdout, stderr };
+    let interrupted: NodeJS.Signals | null = null;
+    const forward = (signal: NodeJS.Signals) => {
+      interrupted = signal;
+      proc.kill(signal);
+    };
+    const onInt = () => forward("SIGINT");
+    const onTerm = () => forward("SIGTERM");
+    process.once("SIGINT", onInt);
+    process.once("SIGTERM", onTerm);
+    try {
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      return {
+        code: interrupted === null ? code : interrupted === "SIGINT" ? 130 : 143,
+        stdout,
+        stderr,
+      };
+    } finally {
+      process.off("SIGINT", onInt);
+      process.off("SIGTERM", onTerm);
+    }
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       return { code: 127, stdout: "", stderr: "" };

@@ -13,18 +13,18 @@ Plain-language, ASCII, copy-paste. The basics in five minutes.
         ┌─────────────────────────────────────┐
         │            kb   (the CLI)            │   ← NO AI inside.
         │   ───────────────────────────────   │     just reliable
-        │   • copy file into  raw/            │     bookkeeping.
-        │   • add one line to index.md        │
-        │   • stamp   log.md                  │
+        │   • copy file into raw/             │     bookkeeping.
+        │   • stamp log.md                    │
+        │   • print the exact Memory target   │
         │   • then PRINT a playbook ──────────┼───┐
         └─────────────────────────────────────┘   │
-                                                   │  "now read raw/paper.txt,
-                                                   │   write a ≤150-word summary,
-                                                   ▼   save to memories/…"
+                                                   │  "read the raw source,
+                                                   │   write a Basic Memory,
+                                                   ▼   update one index line"
         ┌─────────────────────────────────────┐
         │           your AI agent             │   ← the thinking.
-        │   reads the playbook, understands   │     reads, summarizes,
-        │   the paper, writes the memory      │     links, questions.
+        │   reads the source and playbook,    │     summarizes,
+        │   writes the memory, updates index  │     links, catalogs.
         └─────────────────────────────────────┘
 ```
 
@@ -45,16 +45,17 @@ Plain-language, ASCII, copy-paste. The basics in five minutes.
 
 All plain text. Opens in Obsidian. Lives in git. Delete `kb` tomorrow — you still have everything.
 
+For a beginner, do **not** open a random folder first. Run `kb new research` from anywhere; it creates `~/kb/research/` and records it in `~/.config/kb/config.yaml`. Use `kb init` only when you want to turn the current directory into a KB.
+
 ---
 
 ## 3. The hello-world pipeline
 
 ```
-  kb new  ───▶  kb add  ───▶  (AI writes)  ───▶  kb status / kb search
-  ────────      ────────      ───────────       ─────────────────────
-  make a KB     file a        memory saved      see state + Advisor tip
-  ~/kb/research raw source     to memories/      / ask your notes
-                + playbook
+  kb start (optional) ───▶ kb new ───▶ kb add <path> ───▶ (AI writes Memory + index line) ───▶ status/search
+  ───────────────────      ────────    ─────────────      ───────────────────────────────       ─────────────
+  print walkthrough        make a KB   copy source into   memory + catalog line                 confirm / ask
+  initialize nothing       ~/kb/...    raw/ + playbook    in memories/ + index.md               your notes
 ```
 
 ---
@@ -64,32 +65,62 @@ All plain text. Opens in Obsidian. Lives in git. Delete `kb` tomorrow — you st
 ```console
 $ npm i -g @tylerjnewman/kb        # one-time install
 
+$ kb start                         # optional: prints help; initializes nothing
+First run
+
+KB Home: /Users/you/kb
+
+1. Create your first KB: kb new research
+2. Add one raw source: kb add hello.txt
+3. Agent step: follow the printed Playbook.
+4. Search what the agent wrote: kb search "hello world"
+5. Check state: kb status
+
 $ kb new research
 Created KB: research
-Path: ~/kb/research
+Path: /Users/you/kb/research
 Default: research
 Next: kb add <file-or-url>
 
 $ echo "Vector search beats keyword search for fuzzy recall." > paper.txt
 $ kb add paper.txt
 Add playbook
-Raw source: raw/paper-9c1f.txt          # original, filed untouched
+Raw source: raw/paper-0123456789ab.txt   # the 12-character hash varies
 Memory target: memories/paper.md
+URL behavior: local file copied verbatim into raw/.
+
 Agent half:
-  1. Read raw/paper-9c1f.txt.
-  2. Write a summary; save to memories/paper.md.
-  3. Run: kb index update
+1. Read raw/paper-0123456789ab.txt without editing it.
+2. Check memories/ and index.md for an existing Memory on this subject first.
+3. Write memories/paper.md in Basic Memory note format.
+4. Include an executive summary of about 150 words or less.
+5. Extract observations as "- [category] fact #tag".
+6. Extract relations as "- relates_to [[Target]]".
+7. Add or update one index.md line: - [[memories/paper.md|Paper]] | category: <category> | summary: <one-line summary>
+
         |
-        v   (your AI now writes memories/paper.md — the thinking half)
+        v   (your AI writes the Memory and updates index.md)
 
 $ kb status
 KB: research
-Arm: b0 (plain markdown)                # engineless, zero deps
+Path: /Users/you/kb/research
+Arm: b0 (plain markdown)
 Search: plain files
-Sources: 1   Memories: 1   Index entries: 1
+Sources: 1
+Memories: 1
+Index entries: 1
+Health: ok
 Advisor:
-- No suggestions.                       # too small to need search yet
+- No suggestions.
+
+$ kb search "vector search"
 ```
+
+There is no special inbox where you must drop a file. In this example, `paper.txt` is in the terminal's current directory, so `kb add paper.txt` uses that relative path. You could instead run `kb add ~/Downloads/paper.pdf` or pass any absolute path.
+
+`kb add` leaves the original where it is and copies its contents into the selected KB's `raw/` folder. `/Users/you` represents your actual home directory, and `kb new` prints the real absolute path.
+
+The walkthrough text in the example is all `kb start` returns. The first command that creates anything is `kb new`.
 
 ---
 

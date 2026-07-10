@@ -89,13 +89,13 @@
   <h1>kb</h1>
   <p class="subtitle">A filing clerk that lives in your terminal. Your AI thinks; kb does the paperwork.</p>
 
-  <p>A knowledge base needs two different jobs done. <strong>Thinking</strong> — read a paper, understand it, write a good summary, notice where it disagrees with another. And <strong>bookkeeping</strong> — copy the file to the right place, update the index, stamp the log, never lose anything.<span class="sn">People abandon knowledge bases because the bookkeeping grows faster than the value. The AI is the opposite: brilliant at thinking, forgetful at bookkeeping across sessions.</span></p>
+  <p>A knowledge base needs two different jobs done. <strong>Thinking</strong> — read a paper, understand it, write a good summary, notice where it disagrees with another. And <strong>filing</strong> — create the right folders, preserve the raw source, stamp the log, and print exact instructions for the derived note.<span class="sn">People abandon knowledge bases because the filing grows faster than the value. The AI is the opposite: brilliant at thinking, forgetful at filing across sessions.</span></p>
 
-  <p class="epigraph">kb does all the bookkeeping. The AI does all the thinking. Neither does the other's job.</p>
+  <p class="epigraph">kb does the deterministic filing. The AI creates the derived knowledge: the Memory and its one-line index.md catalog entry.</p>
 
   <h2><span class="num">I.</span>The split</h2>
 
-  <p>The surprising part: <strong>kb has no AI inside it.</strong> When you run <code>kb add paper.pdf</code>, it does its deterministic half, then <em>prints a playbook</em> — precise instructions for the agent's half.<span class="sn">This is why kb works with any agent and installs nothing heavy. The CLI is small, dumb, reliable. The intelligence is rented from whatever agent drives it.</span></p>
+  <p>The surprising part: <strong>kb has no AI inside it.</strong> When you run <code>kb add paper.pdf</code>, it copies the file into <code>raw/</code>, stamps the log, then <em>prints a playbook</em> — precise instructions for the agent's half.<span class="sn">This is why kb works with any agent and installs nothing heavy. The CLI is small, dumb, reliable. The intelligence is rented from whatever agent drives it.</span></p>
 
   <figure>
 <pre>                YOU  (talking to your AI agent)
@@ -104,18 +104,18 @@
         ┌─────────────────────────────────────┐
         │            kb   (the CLI)            │   no AI inside.
         │   ───────────────────────────────   │   just reliable
-        │   • copy file into  raw/            │   bookkeeping.
-        │   • add one line to index.md        │
-        │   • stamp   log.md                  │
+        │   • copy file into raw/             │   bookkeeping.
+        │   • stamp log.md                    │
+        │   • print the exact Memory target   │
         │   • then PRINT a playbook ──────────┼───┐
         └─────────────────────────────────────┘   │
-                                                   │  "now read raw/paper.txt,
-                                                   │   write a ≤150-word summary,
-                                                   ▼   save to memories/…"
+                                                   │  "read the raw source,
+                                                   │   write a Basic Memory,
+                                                   ▼   update one index line"
         ┌─────────────────────────────────────┐
         │           your AI agent             │   the thinking.
-        │   reads the playbook, understands   │   reads, summarizes,
-        │   the paper, writes the memory      │   links, questions.
+        │   reads the source and playbook,    │   summarizes,
+        │   writes the memory, updates index  │   links, catalogs.
         └─────────────────────────────────────┘</pre>
     <figcaption>The playbook is the seam between deterministic code and rented intelligence.</figcaption>
   </figure>
@@ -133,16 +133,17 @@
 └── kb.yaml       settings (arm, engine)</pre>
   </figure>
 
+  <p>For a beginner, do <strong>not</strong> open a random folder first. Run <code>kb new research</code> from anywhere; it creates <code>~/kb/research/</code> and records it in <code>~/.config/kb/config.yaml</code>. Use <code>kb init</code> only when you want to turn the current directory into a KB.</p>
+
   <p>Two folders, one rule: the agent <strong>never edits <code>raw/</code></strong>. If a summary is wrong you fix the memory, never the source — so a bad pass can never corrupt your evidence.</p>
 
   <h2><span class="num">III.</span>The hello-world pipeline</h2>
 
   <figure>
-<pre>  kb new  ───▶  kb add  ───▶  (AI writes)  ───▶  kb status / kb search
-  ────────      ────────      ───────────       ─────────────────────
-  make a KB     file a        memory saved      see state + Advisor tip
-  ~/kb/research raw source     to memories/      / ask your notes
-                + playbook</pre>
+<pre>  kb start (optional) ───▶ kb new ───▶ kb add &lt;path&gt; ───▶ (AI writes Memory + index line) ───▶ status/search
+  ───────────────────      ────────    ─────────────      ───────────────────────────────       ─────────────
+  print walkthrough        make a KB   copy source into   memory + catalog line                 confirm / ask
+  initialize nothing       ~/kb/...    raw/ + playbook    in memories/ + index.md               your notes</pre>
   </figure>
 
   <h2><span class="num">IV.</span>A toy run</h2>
@@ -152,31 +153,56 @@
   <figure>
 <pre class="console"><b>$</b> npm i -g @tylerjnewman/kb        <i># one-time install</i>
 
+<b>$</b> kb start                         <i># optional: prints help; initializes nothing</i>
+First run
+
+KB Home: /Users/you/kb
+
+1. Create your first KB: kb new research
+2. Add one raw source: kb add hello.txt
+3. Agent step: follow the printed Playbook.
+4. Search what the agent wrote: kb search "hello world"
+5. Check state: kb status
+
 <b>$</b> kb new research
 Created KB: research
-Path: ~/kb/research
+Path: /Users/you/kb/research
 Default: research
 Next: kb add &lt;file-or-url&gt;
 
-<b>$</b> echo "Vector search beats keyword for fuzzy recall." &gt; paper.txt
+<b>$</b> echo "Vector search beats keyword search for fuzzy recall." &gt; paper.txt
 <b>$</b> kb add paper.txt
 Add playbook
-Raw source: raw/paper-9c1f.txt          <i># original, filed untouched</i>
+Raw source: raw/paper-0123456789ab.txt   <i># the 12-character hash varies</i>
 Memory target: memories/paper.md
+URL behavior: local file copied verbatim into raw/.
+
 Agent half:
-  1. Read raw/paper-9c1f.txt.
-  2. Write a summary; save to memories/paper.md.
-  3. Run: kb index update
+1. Read raw/paper-0123456789ab.txt without editing it.
+2. Check memories/ and index.md for an existing Memory on this subject first.
+3. Write memories/paper.md in Basic Memory note format.
+4. Include an executive summary of about 150 words or less.
+5. Extract observations as "- [category] fact #tag".
+6. Extract relations as "- relates_to [[Target]]".
+7. Add or update one index.md line: - [[memories/paper.md|Paper]] | category: &lt;category&gt; | summary: &lt;one-line summary&gt;
+
         │
-        ▼   <i>(your AI now writes memories/paper.md — the thinking half)</i>
+        ▼   <i>(your AI writes the Memory and updates index.md)</i>
 
 <b>$</b> kb status
 KB: research
-Arm: b0 (plain markdown)                 <i># engineless, zero deps</i>
+Path: /Users/you/kb/research
+Arm: b0 (plain markdown)
 Search: plain files
-Sources: 1   Memories: 1   Index entries: 1
+Sources: 1
+Memories: 1
+Index entries: 1
+Health: ok
 Advisor:
-- No suggestions.                        <i># too small to need search yet</i></pre>
+- No suggestions.
+
+<b>$</b> kb search "vector search"</pre>
+    <figcaption>The walkthrough text is all <code>kb start</code> returns; <code>kb new</code> is the first command that creates anything. There is no special source inbox. Here <code>paper.txt</code> is relative to the terminal's current directory. You can instead pass <code>~/Downloads/paper.pdf</code> or an absolute path. <code>kb add</code> leaves the original in place and copies its contents into the selected KB's <code>raw/</code> folder. <code>/Users/you</code> represents your actual home directory.</figcaption>
   </figure>
 
   <h2><span class="num">V.</span>The "grow later" moment</h2>

@@ -22,7 +22,7 @@ test("command mutation matrix pins KB-owned paths each command may change", asyn
     const source = join(harness.cwd, "source.md");
     await writeFile(source, "# Source\n\nMatrix fact.\n");
     return harness.runKb(["add", source, "--in", "research"]);
-  }, ["log.md", /^raw\//]);
+  }, ["log.md", /^raw\//, /^\.kb\/pending\/add\//]);
 
   await expectAllowedMutation("draft", () => harness.runKb(["draft", "Matrix Memory", "--in", "research"]), [
     "memories/matrix-memory.md",
@@ -39,8 +39,8 @@ test("command mutation matrix pins KB-owned paths each command may change", asyn
   }, ["kb.yaml"]);
 
   await expectAllowedMutation("reflect", () => harness.run("kb", ["reflect", "--in", "research"], {
-    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
-  }), ["kb.yaml", "log.md"], { memory: true });
+    env: { KB_NOW: "2026-07-17T12:00:00.000Z" },
+  }), [".kb/pending/reflect.json"], { memory: true });
 
   await expectAllowedMutation("check", () => harness.runKb(["check", "--in", "research"]), [], {
     memory: true,
