@@ -1,13 +1,14 @@
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-type FileLockOptions = {
+export type FileLockOptions = {
   lockPath: string;
   label: string;
   createError: (message: string) => Error;
   timeoutMs?: number;
   staleMs?: number;
   beforeOwnerWrite?: () => void;
+  beforeRecoveryOwnerWrite?: () => void;
 };
 
 export async function withFileLock<T>(options: FileLockOptions, action: () => Promise<T>): Promise<T> {
@@ -18,8 +19,11 @@ export async function withFileLock<T>(options: FileLockOptions, action: () => Pr
 
   while (true) {
     if (await pathExists(recoveryPath)) {
-      await waitForRetry(options, deadline);
-      continue;
+      await recoverStaleRecoveryMarker(recoveryPath, staleMs);
+      if (await pathExists(recoveryPath)) {
+        await waitForRetry(options, deadline);
+        continue;
+      }
     }
     try {
       await mkdir(options.lockPath);
@@ -38,7 +42,7 @@ export async function withFileLock<T>(options: FileLockOptions, action: () => Pr
       if (!isNodeError(error) || error.code !== "EEXIST") {
         throw options.createError(`${options.label} lock acquisition failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-      await recoverStaleLock(options.lockPath, recoveryPath, staleMs);
+      await recoverStaleLock(options, recoveryPath, staleMs);
       await waitForRetry(options, deadline);
     }
   }
@@ -50,7 +54,7 @@ export async function withFileLock<T>(options: FileLockOptions, action: () => Pr
   }
 }
 
-async function recoverStaleLock(lockPath: string, recoveryPath: string, staleMs: number): Promise<void> {
+async function recoverStaleLock(options: FileLockOptions, recoveryPath: string, staleMs: number): Promise<void> {
   try {
     await mkdir(recoveryPath);
   } catch (error) {
@@ -61,10 +65,38 @@ async function recoverStaleLock(lockPath: string, recoveryPath: string, staleMs:
   }
 
   try {
-    await recoverStaleLockWhileSerialized(lockPath, staleMs);
+    try {
+      options.beforeRecoveryOwnerWrite?.();
+      await writeFile(join(recoveryPath, "owner"), JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+    } catch (error) {
+      await rm(recoveryPath, { recursive: true, force: true });
+      throw options.createError(
+        `${options.label} recovery lock owner write failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    await recoverStaleLockWhileSerialized(options.lockPath, staleMs);
   } finally {
     await rm(recoveryPath, { recursive: true, force: true });
   }
+}
+
+async function recoverStaleRecoveryMarker(recoveryPath: string, staleMs: number): Promise<void> {
+  let owner: { pid?: unknown; createdAt?: unknown };
+  try {
+    owner = JSON.parse(await readFile(join(recoveryPath, "owner"), "utf8")) as { pid?: unknown; createdAt?: unknown };
+  } catch {
+    await removeIfStale(recoveryPath, staleMs);
+    return;
+  }
+
+  if (typeof owner.pid !== "number" || typeof owner.createdAt !== "number") {
+    await removeIfStale(recoveryPath, staleMs);
+    return;
+  }
+  if (Date.now() - owner.createdAt < staleMs || isPidAlive(owner.pid)) {
+    return;
+  }
+  await rm(recoveryPath, { recursive: true, force: true });
 }
 
 async function recoverStaleLockWhileSerialized(lockPath: string, staleMs: number): Promise<void> {

@@ -15,6 +15,8 @@ import {
   slugForMemoryTitle,
   validateMemoryTitle,
 } from "./memory-format";
+import { commitReflectTransition, ReflectTransitionError, withKbEventLock, type ReflectMemory } from "./reflect-transition";
+import { commitScaffoldTransaction, type RegistrationResult } from "./scaffold-transaction";
 
 const EXIT_USAGE = 64;
 const EXIT_UNAVAILABLE = 69;
@@ -69,6 +71,10 @@ export async function main(argv: string[]): Promise<number> {
       return EXIT_USAGE;
     }
     if (error instanceof KbConfigCommitError) {
+      writeError(error.message);
+      return EXIT_UNAVAILABLE;
+    }
+    if (error instanceof ReflectTransitionError) {
       writeError(error.message);
       return EXIT_UNAVAILABLE;
     }
@@ -682,12 +688,20 @@ async function createKb(args: string[], arm: string | null): Promise<number> {
   const kbDir = join(kbHome, name);
 
   try {
-    await mkdir(kbHome, { recursive: true });
-    await scaffoldKb(kbDir, name, selectedArm);
-    const becameDefault = await registerKb(name, kbDir);
+    const registration = await commitScaffoldTransaction({
+      mode: "new",
+      target: kbDir,
+      name,
+      files: scaffoldFiles(name, selectedArm),
+      directories: ["raw", "memories"],
+      initializeGit: !(await isInsideGitRepo(kbHome)),
+      runGitInit: (cwd) => runSilent("git", ["init"], cwd),
+      register: () => registerKb(name, kbDir),
+      rollbackRegistration: () => rollbackKbRegistration(name, kbDir),
+    });
     process.stdout.write(`Created KB: ${name}
 Path: ${kbDir}
-${becameDefault ? `Default: ${name}\n` : ""}Next: kb add <file-or-url>
+${registration.becameDefault ? `Default: ${name}\n` : ""}Next: kb add <file-or-url>
 `);
   } catch (error) {
     if (isNodeError(error) && error.code === "EEXIST") {
@@ -729,8 +743,17 @@ async function initKb(args: string[], arm: string | null): Promise<number> {
   }
 
   try {
-    await scaffoldKb(cwd, name, selectedArm);
-    await registerKb(name, cwd);
+    await commitScaffoldTransaction({
+      mode: "init",
+      target: cwd,
+      name,
+      files: scaffoldFiles(name, selectedArm),
+      directories: ["raw", "memories"],
+      initializeGit: !(await isInsideGitRepo(cwd)),
+      runGitInit: (target) => runSilent("git", ["init"], target),
+      register: () => registerKb(name, cwd),
+      rollbackRegistration: () => rollbackKbRegistration(name, cwd),
+    });
     process.stdout.write(`Initialized KB in ${cwd}
 Next: kb add <file-or-url>
 `);
@@ -767,30 +790,13 @@ function validateArm(arm: string | null): ScaffoldArm | null {
   return selected;
 }
 
-async function scaffoldKb(kbDir: string, name: string, arm: ScaffoldArm = "b0"): Promise<void> {
-  if (await exists(join(kbDir, "kb.yaml"))) {
-    const error = new Error("KB already exists") as NodeJS.ErrnoException;
-    error.code = "EEXIST";
-    throw error;
-  }
-  if (!(await exists(kbDir))) {
-    await mkdir(kbDir);
-  }
-  await Promise.all([
-    writeFile(join(kbDir, "kb.yaml"), kbYaml(arm), { flag: "wx" }),
-    writeFile(join(kbDir, "AGENTS.md"), agentsMd(), { flag: "wx" }),
-    writeFile(join(kbDir, "index.md"), indexMd(), { flag: "wx" }),
-    writeFile(join(kbDir, "log.md"), logMd(name), { flag: "wx" }),
-    mkdir(join(kbDir, "raw")),
-    mkdir(join(kbDir, "memories")),
-  ]);
-
-  if (!(await isInsideGitRepo(kbDir))) {
-    const code = await runSilent("git", ["init"], kbDir);
-    if (code !== 0) {
-      throw new Error("git init failed");
-    }
-  }
+function scaffoldFiles(name: string, arm: ScaffoldArm): Array<{ path: string; content: string }> {
+  return [
+    { path: "kb.yaml", content: kbYaml(arm) },
+    { path: "AGENTS.md", content: agentsMd() },
+    { path: "index.md", content: indexMd() },
+    { path: "log.md", content: logMd(name) },
+  ];
 }
 
 async function listKbs(): Promise<number> {
@@ -994,7 +1000,7 @@ async function logKb(kbName: string | null, args: string[]): Promise<number> {
     return EXIT_USAGE;
   }
 
-  await appendFile(join(target.path, "log.md"), `## [${todayIso()}] ${entry}\n`);
+  await withKbEventLock(target.path, () => appendFile(join(target.path, "log.md"), `## [${todayIso()}] ${entry}\n`));
   return 0;
 }
 
@@ -1033,12 +1039,12 @@ async function reflectKb(kbName: string | null, args: string[]): Promise<number>
     return EXIT_USAGE;
   }
 
-  const config = await readKbConfig(target.path);
-  const changed = await changedMemoriesSince(target.path, config.lastReflectAt);
-  const now = nowInstant();
-  await updateKbConfig(target.path, (current) => ({ ...current, lastReflectAt: now }));
-  await appendLogEntry(target.path, "reflect", `${changed.length} memories`);
-  process.stdout.write(reflectPlaybook(changed));
+  await commitReflectTransition(
+    target.path,
+    nowInstant,
+    (lastReflectAt) => changedMemoriesSince(target.path, lastReflectAt),
+    (changed) => process.stdout.write(reflectPlaybook(changed)),
+  );
   return 0;
 }
 
@@ -1156,7 +1162,7 @@ async function writeRawIfMissing(kbPath: string, rawFile: string, content: strin
 }
 
 async function appendLogEntry(kbPath: string, verb: string, title: string): Promise<void> {
-  await appendFile(join(kbPath, "log.md"), `## [${todayIso()}] ${verb} | ${title}\n`);
+  await withKbEventLock(kbPath, () => appendFile(join(kbPath, "log.md"), `## [${todayIso()}] ${verb} | ${title}\n`));
 }
 
 function readYamlScalar(text: string, key: string): string | null {
@@ -1368,7 +1374,7 @@ async function changedMemoriesSince(kbPath: string, lastReflectAt: string | null
   return (await listMemories(kbPath)).filter((memory) => memory.mtimeMs > cutoff);
 }
 
-function reflectPlaybook(changed: MemoryInfo[]): string {
+function reflectPlaybook(changed: ReflectMemory[]): string {
   const lines = ["Reflect playbook", `Changed since last reflect: ${changed.length}`];
   if (changed.length > 0) {
     lines.push(...changed.map((memory) => `- ${memory.ref} | ${memory.title}`));
@@ -1710,9 +1716,12 @@ class RegistryConflictError extends Error {
 }
 
 class RegistryCommitError extends Error {
-  constructor(message: string) {
+  readonly commitMayHaveSucceeded: boolean;
+
+  constructor(message: string, commitMayHaveSucceeded = false) {
     super(message);
     this.name = "RegistryCommitError";
+    this.commitMayHaveSucceeded = commitMayHaveSucceeded;
   }
 }
 
@@ -1755,7 +1764,7 @@ function renderStartNextStep(name: string, counts: KbCounts, advisor: string[]):
   return `- Ask a question: kb search "hello world"`;
 }
 
-async function registerKb(name: string, path: string): Promise<boolean> {
+async function registerKb(name: string, path: string): Promise<RegistrationResult> {
   return withRegistryLock(async () => {
     const registry = await loadRegistryUnlocked();
     const existingPath = registry.kbs.get(name);
@@ -1763,12 +1772,41 @@ async function registerKb(name: string, path: string): Promise<boolean> {
       throw new RegistryConflictError(`Registry conflict: ${name} already points at ${existingPath}`);
     }
 
+    const added = existingPath === undefined;
     const becameDefault = registry.defaultKb === null || (registry.defaultKb === name && registry.kbs.size === 1 && registry.kbs.has(name));
     registry.kbs.set(name, path);
     registry.defaultKb ??= name;
-    await writeRegistryAtomically(validateRegistry(registry));
-    return becameDefault;
+    if (added) {
+      await writeRegistryAtomically(validateRegistry(registry));
+    }
+    return { becameDefault };
   });
+}
+
+async function rollbackKbRegistration(name: string, path: string): Promise<void> {
+  try {
+    await withRegistryLock(async () => {
+      const registry = await loadRegistryUnlocked();
+      if (registry.kbs.get(name) !== path) {
+        return;
+      }
+      registry.kbs.delete(name);
+      if (registry.defaultKb === name) {
+        registry.defaultKb = [...registry.kbs.keys()].sort()[0] ?? null;
+      }
+      await writeRegistryAtomically(validateRegistry(registry));
+    });
+  } catch (error) {
+    try {
+      const current = await readRegistryFile();
+      if (current.kbs.get(name) !== path) {
+        return;
+      }
+    } catch {
+      // Preserve the original rollback error when its outcome cannot be proven.
+    }
+    throw error;
+  }
 }
 
 async function loadRegistry(): Promise<Registry> {
@@ -1940,6 +1978,7 @@ async function writeRegistryAtomically(registry: Registry): Promise<void> {
   const path = registryPath();
   const directory = dirname(path);
   const tmp = join(directory, `.config.yaml.${process.pid}.${Date.now()}.tmp`);
+  let replaced = false;
   await mkdir(directory, { recursive: true });
   try {
     if (process.env.KB_TEST_FAIL_REGISTRY_COMMIT === "1" || process.env.KB_FAIL_REGISTRY_COMMIT === "before-write") {
@@ -1950,14 +1989,18 @@ async function writeRegistryAtomically(registry: Registry): Promise<void> {
       throw new RegistryCommitError("failed to commit Registry");
     }
     await rename(tmp, path);
+    replaced = true;
+    if (process.env.KB_FAIL_REGISTRY_COMMIT === "after-rename") {
+      throw new RegistryCommitError("failed to confirm Registry commit after replacement", true);
+    }
+    await stat(path);
   } catch (error) {
     await rm(tmp, { force: true });
     if (error instanceof RegistryCommitError) {
       throw error;
     }
-    throw new RegistryCommitError("failed to commit Registry");
+    throw new RegistryCommitError("failed to commit Registry", replaced);
   }
-  await stat(path);
 }
 
 async function withRegistryLock<T>(action: () => Promise<T>): Promise<T> {

@@ -383,7 +383,7 @@ Line format:
 - [[memories/<file>.md|<title>]] | category: <category> | summary: <one-line summary>
 `);
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toMatch(/^# KB Log\n\n## \[\d{4}-\d{2}-\d{2}\] created \| research\n$/);
-  expect(await readFile(join(harness.home, "git-calls"), "utf8")).toEndWith("/home/kb/research init\n");
+  expect(await readFile(join(harness.home, "git-calls"), "utf8")).toEndWith("/home/kb/.kb-research.staging init\n");
   expect(await readFile(join(harness.xdgConfigHome, "kb", "config.yaml"), "utf8")).toBe(`default: research
 kbs:
   research: ${kbDir}
@@ -813,7 +813,11 @@ test("failed Registry commit preserves prior entries and removes command tempora
 kbs:
   research: ${join(harness.home, "kb", "research")}
 `);
+  await expect(stat(join(harness.home, "kb", "papers"))).rejects.toMatchObject({ code: "ENOENT" });
   expect((await readdir(join(harness.xdgConfigHome, "kb"))).filter((entry) => entry.includes(".tmp"))).toEqual([]);
+
+  const retried = await harness.runKb(["new", "papers"]);
+  expect(retried.code, retried.stderr).toBe(0);
 });
 
 test("failed Registry replacement preserves prior entries and removes its temporary file", async () => {
