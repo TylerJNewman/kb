@@ -30,9 +30,10 @@ export async function readKbConfig(kbPath: string): Promise<KbConfig> {
 
 export async function updateKbConfig(kbPath: string, transform: (config: KbConfig) => KbConfig): Promise<KbConfig> {
   return withConfigLock(kbPath, async () => {
-    const current = await readKbConfig(kbPath);
+    const currentText = await readFile(configPath(kbPath), "utf8");
+    const current = parseKbConfig(currentText);
     const next = validateKbConfig(transform(current));
-    await writeConfigAtomically(kbPath, serializeKbConfig(next));
+    await writeConfigAtomically(kbPath, patchKbConfig(currentText, next));
     return next;
   });
 }
@@ -52,6 +53,7 @@ lastReflectAt: ${validated.lastReflectAt ?? "null"}
 
 function parseKbConfig(text: string): KbConfig {
   const entries = parseConfigEntries(text);
+  validateConfigEntryShapes(entries);
   requireUniqueMapping(entries, ["engine"]);
   requireUniqueMapping(entries, ["engine", "basicMemory"]);
 
@@ -113,6 +115,47 @@ type ConfigEntry = {
   path: string[];
   value: string | null;
 };
+
+const CONFIG_SCHEMA = new Map<string, "mapping" | "scalar">([
+  ["schemaVersion", "scalar"],
+  ["formatVersion", "scalar"],
+  ["arm", "scalar"],
+  ["engine", "mapping"],
+  ["engine.basicMemory", "mapping"],
+  ["engine.basicMemory.state", "scalar"],
+  ["engine.basicMemory.project", "scalar"],
+  ["lastReflectAt", "scalar"],
+]);
+
+function validateConfigEntryShapes(entries: ConfigEntry[]): void {
+  for (const entry of entries) {
+    const path = entry.path.join(".");
+    const expected = CONFIG_SCHEMA.get(path);
+    if (expected === undefined) {
+      throw new KbConfigError(`unknown configuration field: ${path}`);
+    }
+    const actual = entry.value === null ? "mapping" : "scalar";
+    if (actual !== expected) {
+      throw new KbConfigError(`expected ${expected}: ${path}`);
+    }
+  }
+}
+
+function patchKbConfig(text: string, config: KbConfig): string {
+  const replacements: Array<[RegExp, string]> = [
+    [/^schemaVersion:[^\r\n]*$/m, "schemaVersion: 1"],
+    [/^formatVersion:[^\r\n]*$/m, `formatVersion: ${FORMAT_VERSION}`],
+    [/^arm:[^\r\n]*$/m, `arm: ${config.arm}`],
+    [/^    state:[^\r\n]*$/m, `    state: ${config.engineState}`],
+    [/^    project:[^\r\n]*$/m, `    project: ${config.engineProject ?? "null"}`],
+    [/^lastReflectAt:[^\r\n]*$/m, `lastReflectAt: ${config.lastReflectAt ?? "null"}`],
+  ];
+  let patched = text;
+  for (const [pattern, replacement] of replacements) {
+    patched = patched.replace(pattern, replacement);
+  }
+  return patched;
+}
 
 function parseConfigEntries(text: string): ConfigEntry[] {
   const entries: ConfigEntry[] = [];

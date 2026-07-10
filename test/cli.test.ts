@@ -2198,7 +2198,7 @@ test("configuration validation rejects representative unsupported required-value
     },
     {
       content: valid.replace("  basicMemory:", "  unrelated:"),
-      error: "missing basicMemory",
+      error: "unknown configuration field: engine.unrelated",
     },
   ];
 
@@ -2212,6 +2212,90 @@ test("configuration validation rejects representative unsupported required-value
     });
     expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(scenario.content);
   }
+});
+
+test("configuration validation rejects unknown paths and mapping-scalar shape mismatches", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const valid = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  const cases = [
+    { content: `${valid}futureField: value\n`, error: "unknown configuration field: futureField" },
+    { content: `${valid}futureMapping:\n  value: nested\n`, error: "unknown configuration field: futureMapping" },
+    {
+      content: valid.replace("    state: disabled", "    futureState: disabled"),
+      error: "unknown configuration field: engine.basicMemory.futureState",
+    },
+    {
+      content: valid.replace("engine:\n  basicMemory:\n    state: disabled\n    project: null", "engine: disabled"),
+      error: "expected mapping: engine",
+    },
+    { content: valid.replace("arm: b0", "arm:\n  value: b0"), error: "expected scalar: arm" },
+    {
+      content: valid.replace("  basicMemory:\n    state: disabled\n    project: null", "  basicMemory: disabled"),
+      error: "expected mapping: engine.basicMemory",
+    },
+  ];
+
+  for (const scenario of cases) {
+    await writeFile(join(kbDir, "kb.yaml"), scenario.content);
+    const result = await harness.runKb(["status", "--kb", "research"]);
+    expect(result).toEqual({
+      code: 64,
+      stdout: "",
+      stderr: `kb: invalid kb.yaml: ${scenario.error}\n`,
+    });
+    expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(scenario.content);
+  }
+});
+
+test("every existing-KB command rejects unknown configuration before mutation", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const source = join(harness.cwd, "source.txt");
+  await writeFile(source, "source bytes\n");
+  const configPath = join(kbDir, "kb.yaml");
+  const invalid = `${await readFile(configPath, "utf8")}futureField: value\n`;
+  await writeFile(configPath, invalid);
+  const before = await contentHashes(kbDir);
+  const commands = [
+    ["status", "--kb", "research"],
+    ["add", source, "--kb", "research"],
+    ["draft", "Rejected Memory", "--kb", "research"],
+    ["search", "anything", "--kb", "research"],
+    ["read", "missing", "--kb", "research"],
+    ["log", "question | rejected", "--kb", "research"],
+    ["enable", "search", "--kb", "research"],
+    ["reflect", "--kb", "research"],
+    ["check", "--kb", "research"],
+  ];
+
+  for (const command of commands) {
+    const result = await harness.runKb(command);
+    expect(result, command.join(" ")).toEqual({
+      code: 64,
+      stdout: "",
+      stderr: "kb: invalid kb.yaml: unknown configuration field: futureField\n",
+    });
+    expect(await contentHashes(kbDir), command.join(" ")).toEqual(before);
+    expect(await readFile(configPath, "utf8"), command.join(" ")).toBe(invalid);
+  }
+});
+
+test("configuration comments survive successful owned-field updates", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const configPath = join(kbDir, "kb.yaml");
+  const commented = `# KB configuration\n${await readFile(configPath, "utf8")}# end configuration\n`;
+  await writeFile(configPath, commented);
+
+  const staged = await harness.run("kb", ["reflect", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-09T12:00:00.000Z" },
+  });
+  expect(staged.code).toBe(0);
+  const updated = await readFile(configPath, "utf8");
+  expect(updated).toStartWith("# KB configuration\n");
+  expect(updated).toEndWith("# end configuration\n");
+  expect(updated).toContain("lastReflectAt: 2026-07-09T12:00:00.000Z\n");
 });
 
 test("contradictory Engine state is rejected instead of defaulting to unknown", async () => {
