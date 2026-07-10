@@ -513,20 +513,20 @@
         </div>
         <div class="terminal-card" aria-label="kb terminal preview">
           <div class="terminal-top" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
-          <pre><code>$ npm i -g @tylerjnewman/kb
-$ kb start  # optional
-prints help; initializes nothing
+          <pre><code>$ bun install --global @tylerjnewman/kb
+$ kb --version
+$ git --version
 
 $ kb new research
 creates ~/kb/research/
 sets it as your default KB
 
-$ kb add ~/Downloads/paper.pdf
-keeps original; copies to raw/
-stamps log and prints playbook
+$ printf '%s\n' 'hello world' &gt; hello.txt
+$ kb add hello.txt --in research
+copies to raw/; prints complete playbook
 
 AI follows playbook
-writes memory and index line</code></pre>
+writes Memory + index, runs --complete</code></pre>
         </div>
       </div>
     </section>
@@ -589,13 +589,13 @@ writes memory and index line</code></pre>
           <p class="eyebrow">Start small, grow later</p>
           <h2 id="grow-title">No migration story.</h2>
         </div>
-        <p class="subtle">The default arm is B0: plain files, no engine, useful at small scale. When the pain appears, the Advisor explains the next move.</p>
+        <p class="subtle">The default is plain files with plain-file search. When the pain appears, the Advisor explains the optional upgrade.</p>
       </div>
       <div class="steps">
-        <article class="step"><strong>1. Begin engineless</strong><span>B0 is just files and conventions. Search reads the index and matches text.</span></article>
+        <article class="step"><strong>1. Begin with files</strong><span>Search reads the index and matches text. There is no search engine to install yet.</span></article>
         <article class="step"><strong>2. Feel the slowdown</strong><span>As the KB grows, simple search becomes less pleasant.</span></article>
         <article class="step"><strong>3. Advisor suggests</strong><span>It says why `kb enable search` is useful. It never acts for you.</span></article>
-        <article class="step"><strong>4. Same files</strong><span>Basic Memory is enabled behind the same markdown. Nothing moves. Nothing is rewritten.</span></article>
+        <article class="step"><strong>4. Same files</strong><span>The optional local search engine, Basic Memory, is enabled behind the same markdown. kb installs and drives it; nothing moves or gets rewritten.</span></article>
       </div>
     </section>
 
@@ -611,7 +611,7 @@ writes memory and index line</code></pre>
         <details><summary>1. The split. kb does one job, the AI does the other. Which is which, and why split them?</summary><div><code>kb</code> does deterministic filing: scaffold folders, preserve raw sources, stamp the log, and print playbooks. The AI does the meaning work: understand the source, write the Memory, link related notes, and add or update its catalog line in <code>index.md</code>. We split them because the two jobs fail for opposite reasons: filing fails from human laziness and agent forgetfulness, so it must be <em>deterministic code that never forgets</em>; thinking needs a real mind, so it must be the <em>AI</em>. Put the reliable job in reliable code. Rent the smart job. A <code>kb</code> that tried to be smart would be worse at both.</div></details>
         <details><summary>2. The playbook. You run kb add mypaper.pdf. One thing kb does; one thing it does NOT do but tells the AI to do. Why can't kb do the second thing?</summary><div><code>kb</code> copies the file into <code>raw/</code> unchanged, adds a log entry, and prints the playbook. It does <strong>not</strong> write the Memory or update <code>index.md</code>; the AI does both because they depend on understanding the source. <code>kb</code> can't do that because writing a good summary is <em>thinking</em>, and <code>kb</code> has no AI inside it. That is the whole design, not a missing feature.</div></details>
         <details><summary>3. Raw vs memories. Why two folders? What rule does the AI follow about raw/</summary><div><code>raw/</code> holds the <strong>originals, immutable</strong>: the source of truth. <code>memories/</code> holds the <strong>AI's derived notes</strong>: the useful, rewritable layer. The rule: <strong>the AI never edits <code>raw/</code>.</strong> If a summary is wrong, you fix the memory, never the source. This means you can always re-derive notes from untouched originals, and a bad AI pass can never corrupt your evidence.</div></details>
-        <details><summary>4. The upgrade. Friend has 200 notes, search feels slow. One command? What happens to existing notes? Who tells them?</summary><div>Command: <strong><code>kb enable search</code></strong>. It installs the Basic Memory engine behind the <strong>same files</strong>: existing notes are <strong>not moved or rewritten</strong>, zero migration. Who tells them: the <strong>Advisor</strong> already suggested it in <code>kb status</code> when the KB crossed a size threshold, with a one-line reason. Pain felt → lesson taught → one command → done.</div></details>
+        <details><summary>4. The upgrade. Friend has 200 notes, search feels slow. One command? What happens to existing notes? Who tells them?</summary><div>Command: <strong><code>kb enable search</code></strong>. It installs the optional local search engine, Basic Memory, behind the <strong>same files</strong>: existing notes are <strong>not moved or rewritten</strong>, zero migration. Who tells them: the <strong>Advisor</strong> already suggested it in <code>kb status</code> when the KB crossed a size threshold, with a one-line reason. Pain felt → lesson taught → one command → done.</div></details>
         <details><summary>5. The bet. Why plain markdown in a git folder instead of a nice app with a database?</summary><div>Concrete benefits: <strong>you own it forever</strong> (no lock-in, no vendor), <strong>git gives free history/undo/branching</strong>, <strong>any tool reads it</strong> (Obsidian, grep, another agent), and <strong>the index can always be rebuilt from the files</strong>: the files are the master, never the database. A pretty app that owns your data can disappear; a folder of markdown can't.</div></details>
         <details><summary>6. Deep module. The whole CLI is ~13 verbs. Why is a small verb set a feature?</summary><div>Because <strong>leverage</strong>: you learn a few words and get the whole system; all the messy bookkeeping hides behind them. Small interface + lots of hidden behavior = a deep module. A big interface would mean you have to understand the plumbing to use the tool: the opposite of "so simple you never have to think."</div></details>
       </div>
@@ -623,42 +623,40 @@ writes memory and index line</code></pre>
           <p class="eyebrow">Hello world</p>
           <h2 id="hello-title" tabindex="-1">Your first five minutes.</h2>
         </div>
-        <p class="subtle"><code>kb start</code> is optional help and initializes nothing. The beginner loop is new → add a file path → AI writes the Memory and index line → status/search. <code>kb new</code> chooses <code>~/kb/&lt;name&gt;/</code> for you; <code>kb init</code> is the advanced current-directory option.</p>
+        <p class="subtle"><code>kb start</code> is optional help and initializes nothing. The beginner loop is stage → hand the complete playbook to your AI → receive the completion receipt → verify. The explicit target keeps the tutorial out of any other KB your terminal may be inside.</p>
       </div>
       <div class="terminal-card">
         <div class="code-head">
-          <strong>Copy and run</strong>
-          <button class="copy" id="copyCode" type="button">Copy</button>
+          <strong>1. Install, create, and stage</strong>
+          <button class="copy" id="copyCode" type="button" aria-live="polite">Copy setup</button>
         </div>
-        <pre><code id="helloCode">npm i -g @tylerjnewman/kb
+        <pre><code id="setupCode">curl -fsSL https://bun.com/install | bash
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+export PATH="$BUN_INSTALL/bin:$PATH"
+bun install --global @tylerjnewman/kb
+kb --version
+git --version
 
-kb start            # optional help; initializes nothing
-# prints a reusable checklist:
-#   KB Home: /Users/you/kb
-#   1. kb new research
-#   2. kb add hello.txt
-#   3. agent follows the Playbook
-#   4. kb search "hello world"
-#   5. kb status
-# returns text only; creates nothing
-
-kb new research     # creates ~/kb/research/ and sets it as default
-
-# The source can be anywhere. Use a relative or absolute path:
-kb add ~/Downloads/paper.pdf
-# keeps the original file where it is
-# copies its contents into ~/kb/research/raw/
-# stamps log.md and prints exact source + Memory paths
-
-# Your AI now follows the printed playbook:
-# - write memories/paper.md in Basic Memory format
-# - add or update one index.md catalog line
-# kb itself does not perform those two steps
-
-kb status
-kb search "topic"
-
-# kb init scaffolds cwd; it is not the beginner path.</code></pre>
+kb new research
+sample_dir="$(mktemp -d)"
+printf '%s\n' 'Vector search helps with fuzzy recall.' &gt; "$sample_dir/hello.txt"
+kb add "$sample_dir/hello.txt" --in research</code></pre>
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <strong>2. Stop and hand off to your AI</strong>
+        <p id="agentPrompt">Work in <code>~/kb/research</code>. Follow the complete Add playbook printed above. Read the staged raw source without editing it, write the Memory in kb's standard markdown format, update the index entry, run the exact final <code>kb add --complete ... --in research</code> command from the playbook, and return its <code>Completed Add handoff</code> receipt.</p>
+        <p class="subtle">Do not invent the generated raw hash or Memory path. Wait for the receipt before continuing.</p>
+      </div>
+      <div class="terminal-card" style="margin-top:14px">
+        <div class="code-head"><strong>3. Verify after the receipt</strong></div>
+        <pre><code id="verifyCode">kb status --in research
+kb search "vector search" --in research
+rm -rf "$sample_dir"  # optional; kb already copied the source</code></pre>
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <strong>Coming back or retrying?</strong>
+        <p>Do not recreate an existing KB. Run <code>kb status --in research</code>. If it lists unfinished Add work, run its shown <code>kb add --resume &lt;raw-ref&gt; --in research</code> command and give the complete resumed playbook to your AI. <code>KB already exists</code> is a safe refusal.</p>
+        <p>If an earlier create failed with <code>git init failed</code>, install Git, run <code>git -C ~/kb/research init</code>, then continue with status. Do not rerun <code>kb new research</code>; the scaffold is already there.</p>
       </div>
     </section>
 
@@ -680,7 +678,7 @@ kb search "topic"
   </main>
 
   <footer class="wrap">
-    <p><span class="repo-text">TylerJNewman/kb</span> as text, not a link: this page has no external resources. Next: a voiced tutorial and a guided first-run.</p>
+    <p><span class="repo-text">TylerJNewman/kb</span> as text, not a link: this page has no external resources. Run <code>kb start</code> whenever you want the deterministic, non-interactive checklist again.</p>
   </footer>
 
   <script>
@@ -709,21 +707,32 @@ kb search "topic"
       var feynman = document.getElementById("feynmanVoice");
       var voiceText = document.getElementById("voiceText");
       var copyButton = document.getElementById("copyCode");
-      var helloCode = document.getElementById("helloCode");
+      var setupCode = document.getElementById("setupCode");
+
+      function focusCurrentHashHeading() {
+        if (!window.location.hash) return;
+        var section = document.getElementById(window.location.hash.slice(1));
+        var headingId = section && section.getAttribute("aria-labelledby");
+        var heading = headingId && document.getElementById(headingId);
+        if (!heading) return;
+
+        heading.focus({ preventScroll: true });
+      }
 
       document.addEventListener("click", function (event) {
         var link = event.target.closest('a[href^="#"]');
         if (!link || event.defaultPrevented) return;
 
-        var section = document.getElementById(link.hash.slice(1));
-        var headingId = section && section.getAttribute("aria-labelledby");
-        var heading = headingId && document.getElementById(headingId);
-        if (!heading) return;
-
         window.setTimeout(function () {
-          heading.focus({ preventScroll: true });
+          focusCurrentHashHeading();
         }, 0);
       });
+      window.addEventListener("hashchange", function () {
+        window.setTimeout(focusCurrentHashHeading, 0);
+      });
+      if (window.location.hash) {
+        window.setTimeout(focusCurrentHashHeading, 0);
+      }
 
       function setVoice(kind) {
         var isGrug = kind === "grug";
@@ -746,8 +755,8 @@ kb search "topic"
         document.body.appendChild(area);
         area.select();
         try {
-          document.execCommand("copy");
-          copyButton.textContent = "Copied";
+          var copied = document.execCommand("copy");
+          copyButton.textContent = copied ? "Copied" : "Select text";
         } catch (error) {
           copyButton.textContent = "Select text";
         }
@@ -755,7 +764,7 @@ kb search "topic"
       }
 
       copyButton.addEventListener("click", function () {
-        var text = helloCode.textContent;
+        var text = setupCode.textContent;
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(text).then(function () {
             copyButton.textContent = "Copied";
@@ -765,7 +774,7 @@ kb search "topic"
         } else {
           fallbackCopy(text);
         }
-        window.setTimeout(function () { copyButton.textContent = "Copy"; }, 1800);
+        window.setTimeout(function () { copyButton.textContent = "Copy setup"; }, 1800);
       });
     }());
   </script>

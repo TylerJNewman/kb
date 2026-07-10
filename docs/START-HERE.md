@@ -22,7 +22,7 @@ Humans quit knowledge bases because the *filing* grows faster than the value. Th
 
 > **`kb` does the deterministic filing. The AI creates the derived knowledge: the Memory and its one-line `index.md` catalog entry.**
 
-The clever part: **`kb` has no AI inside it.** When you run `kb add paper.pdf`, it copies the file into `raw/`, stamps the log, and prints a **playbook**. The playbook tells your AI to read the untouched source, write a Basic Memory note in `memories/`, and add or update one catalog line in `index.md`. `kb` does not write the Memory or index line itself.
+The clever part: **`kb` has no AI inside it.** When you run `kb add paper.pdf`, it copies the file into `raw/`, stamps the log, and prints a **playbook**. The playbook tells your AI to read the untouched source, write a Memory in kb's standard markdown format, add or update one catalog line in `index.md`, and run the printed completion command. `kb` does not write the Memory or index line itself.
 
 That is why `kb` works with *any* agent and installs nothing heavy. The CLI is small, dumb, and reliable. The intelligence is rented from whatever agent is driving.
 
@@ -57,7 +57,7 @@ When your KB gets big and reading gets slow, `kb` *notices* and says:
 
 > "You have a lot of notes now — run `kb enable search` to get real search."
 
-That command installs a real search engine (Basic Memory) behind the **same files**. Nothing moves. Nothing is rewritten. You upgrade only when you feel the pain — and `kb` teaches you *why* at that exact moment.
+That command installs the optional local search engine, Basic Memory, behind the **same files**. It is a search helper that `kb` installs and drives for you; beginners do not need to install or learn it. Nothing moves. Nothing is rewritten. You upgrade only when you feel the pain — and `kb` teaches you *why* at that exact moment.
 
 The thing that watches and suggests is called the **Advisor**. Rule: **it suggests, it never acts.** You stay in control.
 
@@ -89,7 +89,7 @@ Try to answer in your own words first, then check.
 
 **4. The upgrade. Friend has 200 notes, search feels slow. One command? What happens to existing notes? Who tells them?**
 
-> Command: **`kb enable search`**. It installs the Basic Memory engine behind the **same files** — existing notes are **not moved or rewritten**, zero migration. Who tells them: the **Advisor** already suggested it in `kb status` when the KB crossed a size threshold, with a one-line reason. Pain felt → lesson taught → one command → done.
+> Command: **`kb enable search`**. It installs the optional local search engine, Basic Memory, behind the **same files** — existing notes are **not moved or rewritten**, zero migration. Who tells them: the **Advisor** already suggested it in `kb status` when the KB crossed a size threshold, with a one-line reason. Pain felt → lesson taught → one command → done.
 
 **5. The bet. Why plain markdown in a git folder instead of a nice app with a database?**
 
@@ -105,13 +105,18 @@ Try to answer in your own words first, then check.
 
 You do not need to choose or open a project folder first.
 
-### 1. Install the command
+### 1. Install the command and verify prerequisites
 
 ```bash
-npm i -g @tylerjnewman/kb
+curl -fsSL https://bun.com/install | bash
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+export PATH="$BUN_INSTALL/bin:$PATH"
+bun install --global @tylerjnewman/kb
+kb --version
+git --version
 ```
 
-Expected result: the `kb` command becomes available in your terminal. No KB exists yet.
+Expected result: the `kb` command becomes available and Git is on `PATH`. `kb` uses Bun at runtime and uses Git when it creates a KB. No KB exists yet.
 
 ### 2. Optionally print the walkthrough
 
@@ -128,20 +133,24 @@ First run
 
 KB Home: /Users/you/kb
 
+Prerequisite: Git must be on PATH because kb new initializes a git repository.
+   git --version
+
 1. Create your first KB.
    kb new research
 
-2. Add one raw source.
-   kb add hello.txt
+2. Create and stage one harmless source.
+   sample_dir="$(mktemp -d)"
+   printf '%s\n' 'Vector search helps with fuzzy recall.' > "$sample_dir/hello.txt"
+   kb add "$sample_dir/hello.txt" --in research
 
-3. Agent step: follow the printed Playbook.
-   Write the Memory in /Users/you/kb/research/memories.
+3. Agent step: give the complete printed playbook to your AI agent.
+   The agent writes the Memory and index line, runs the final kb add --complete command,
+   and returns the Completed Add handoff receipt.
 
-4. Search what the agent wrote.
-   kb search "hello world"
-
-5. Check state and the Advisor's next suggestion.
-   kb status
+4. Only after that receipt, confirm and search.
+   kb status --in research
+   kb search "vector search" --in research
 ```
 
 It is a reusable cheat sheet, not a setup operation. The path uses your real home directory.
@@ -149,6 +158,7 @@ It is a reusable cheat sheet, not a setup operation. The path uses your real hom
 ### 3. Create your first KB
 
 ```bash
+git --version
 kb new research
 ```
 
@@ -159,46 +169,60 @@ Expected result:
 - makes `research` your default KB; and
 - records its location in `~/.config/kb/config.yaml`.
 
-### 4. Add a source file
+### 4. Create and add a harmless sample
 
 The file does not have to be inside the KB. It can be anywhere your computer can read. Give `kb add` either:
 
 - a path relative to your terminal's current directory: `paper.txt` or `../Downloads/paper.pdf`; or
 - an absolute path: `/Users/you/Downloads/paper.pdf`.
 
-For example:
+For the first run, create a source so the block works on a clean machine:
 
 ```bash
-kb add ~/Downloads/paper.pdf
+sample_dir="$(mktemp -d)"
+printf '%s\n' 'Vector search helps with fuzzy recall.' > "$sample_dir/hello.txt"
+kb add "$sample_dir/hello.txt" --in research
 ```
 
-Expected result: `kb` leaves the original file in place, copies its contents into `~/kb/research/raw/`, stamps `log.md`, and prints an Add playbook containing the exact copied-source and Memory paths.
+Expected result: `kb` leaves the sample in place, copies its contents into `~/kb/research/raw/`, stamps `log.md`, records a pending handoff, and prints an Add playbook containing the exact copied-source and Memory paths. The explicit target prevents a terminal inside another KB from silently receiving the source.
 
 ### 5. Let your AI follow the playbook
+
+Stop running shell commands and give your AI this prompt:
+
+> Work in `~/kb/research`. Follow the complete Add playbook printed above. Read the staged raw source without editing it, write the Memory and index entry, run the exact final `kb add --complete ... --in research` command from the playbook, and return its `Completed Add handoff` receipt.
 
 Your AI:
 
 1. reads the staged `raw/` file without editing it;
 2. checks for an existing Memory on the subject;
-3. writes `memories/paper.md` in Basic Memory format; and
-4. adds or updates one catalog line in `index.md`.
+3. writes the target Memory in kb's standard markdown format;
+4. adds or updates one catalog line in `index.md`; and
+5. runs the exact completion command from the playbook.
 
 `kb add` does **not** write the Memory or update `index.md` itself.
 
-Expected result: a new or updated file such as `~/kb/research/memories/paper.md`, plus its catalog line in `~/kb/research/index.md`.
+Expected result: a new or updated Memory, its catalog line in `~/kb/research/index.md`, and a receipt beginning `Completed Add handoff:`. Before that receipt, `kb status` may correctly say `Health: unfinished work`.
 
 ### 6. Confirm and search
 
 ```bash
-kb status
-kb search "topic"
+kb status --in research
+kb search "vector search" --in research
+rm -rf "$sample_dir"
 ```
 
 Expected result: `kb status` shows source, Memory, and index counts; `kb search` returns matching Memories.
 
 That is it: **install → optional walkthrough → new → add a file path → agent writes Memory and index line → status/search.** No database, no signup, and no configuration to write by hand.
 
-**Why no `--in` flag?** Your first KB becomes the default, so plain `kb add`, `kb status`, and `kb search` target it even when your terminal is somewhere else. Use `--in <name>` only when you have several KBs and want a different one.
+**Why use `--in research` in the tutorial?** Normal targeting prefers the KB your terminal is inside, then your default. The explicit target makes this copied tutorial deterministic even when you already have other KBs.
+
+### Coming back or retrying?
+
+Do not recreate an existing KB. Run `kb status --in research`. If it lists unfinished Add work, run its shown `kb add --resume <raw-ref> --in research` command and give the complete resumed playbook to your AI. `KB already exists` is a safe refusal; it does not replace your files.
+
+If an earlier `kb new` failed with `git init failed`, install Git, run `git -C ~/kb/research init`, then continue with `kb status --in research`. Do not rerun `kb new research`; the existing scaffold is preserved.
 
 **What about `kb init`?** It scaffolds the current directory. That is useful for an existing project you deliberately want to make into a KB, but it is not the beginner path.
 
@@ -206,12 +230,10 @@ In an AI coding agent, you can say: *"Add this paper to my research KB and follo
 
 ---
 
-## Where this is going (planned, not built yet)
+## Keep learning
 
-This document is the seed of something friendlier:
+- Open the current self-contained HTML onboarding page for the Grug/Feynman explanations and quiz.
+- Open the visual walkthrough for the complete worked Add lifecycle.
+- Run `kb start` whenever you want the deterministic, read-only checklist again.
 
-- **A voiced, interactive tutorial** — Grug and Feynman walking a newcomer through their first KB, asking the quiz questions live, celebrating each step.
-- **Beautiful HTML onboarding** — the same content as a single self-contained page: fun, simple, engaging, but honest about the power underneath.
-- **A guided first-run** — `kb` itself could offer to walk a brand-new user through hello-world.
-
-The goal never changes: **simple on the surface, deep underneath, and the user always in control.**
+First-run guidance stays non-interactive: **simple on the surface, deep underneath, and the user always in control.**

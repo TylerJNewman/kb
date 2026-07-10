@@ -146,12 +146,26 @@ test("kb start on an empty environment prints create-your-first guidance", async
   expect(result.stdout).toContain("First run");
   expect(result.stdout).toContain(`KB Home: ${join(harness.home, "kb")}`);
   expect(result.stdout).toContain("1. Create your first KB.");
+  expect(result.stdout).toContain("git --version");
   expect(result.stdout).toContain("kb new research");
-  expect(result.stdout).toContain("kb add hello.txt");
+  expect(result.stdout).toContain('kb add "$sample_dir/hello.txt" --in research');
   expect(result.stdout).toContain("Agent step: give the complete printed playbook to your AI agent.");
+  expect(result.stdout).toContain("runs the final kb add --complete command");
   expect(result.stdout).toContain(`relative to ${join(harness.home, "kb", "research")}`);
-  expect(result.stdout).toContain('kb search "hello world"');
-  expect(result.stdout).toContain("kb status");
+  expect(result.stdout).toContain('kb search "vector search" --in research');
+  expect(result.stdout).toContain("kb status --in research");
+  expect(result.stdout).toContain("kb add --resume <raw-ref> --in research");
+});
+
+test("kb add --help exposes stage, resume, and completion forms", async () => {
+  const result = await harness.runKb(["add", "--help"]);
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toContain("kb add <file-or-url> [--in <name>]");
+  expect(result.stdout).toContain("kb add --resume <raw-ref> [--in <name>]");
+  expect(result.stdout).toContain("kb add --complete <raw-ref> <memory-ref> [--in <name>]");
+  expect(result.stdout).toContain("normally runs --complete");
 });
 
 test("kb start --help prints start help", async () => {
@@ -384,7 +398,7 @@ test("kb start remains a stable read-only walkthrough when KBs exist", async () 
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
   expect(result.stdout).toContain("First run");
-  expect(result.stdout).toContain("kb add hello.txt");
+  expect(result.stdout).toContain('kb add "$sample_dir/hello.txt" --in research');
   expect(result.stdout).toContain("kb start is optional and read-only");
   expect(result.stdout).not.toContain("Known KBs:");
 });
@@ -535,7 +549,7 @@ URL behavior: local file copied verbatim into raw/.
 Agent half:
 1. Read raw/${rawFiles[0]} without editing it.
 2. Check memories/ and index.md for an existing Memory on this subject first.
-3. Write memories/source.md in Basic Memory note format.
+3. Write memories/source.md in kb's standard markdown Memory format.
 4. Include an executive summary of about 150 words or less.
 5. Extract observations as "- [category] fact #tag".
 6. Extract relations as "- relates_to [[Target]]".
@@ -585,7 +599,7 @@ URL behavior: local file copied verbatim into raw/.
 
 Agent half:
 1. Read raw/${rawFile} without editing it.
-2. Write or update memories/source.md in Basic Memory note format.
+2. Write or update memories/source.md in kb's standard markdown Memory format.
 3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
 4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
 5. Add or update one index.md line: - [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>
@@ -1157,7 +1171,7 @@ Changed since last reflect: 1
 
 Agent half:
 1. Read exactly the Memory refs listed above.
-2. Write any useful cross-memory synthesis back into memories/ as Basic Memory-compatible Memories.
+2. Write any useful cross-memory synthesis back into memories/ as standard markdown Memories.
 3. Add or update index.md lines only for Memories you actually create or revise.
 4. Do not claim contradiction detection, stale-fact judgment, or semantic consolidation as guaranteed by kb reflect.
 5. When the Agent half is complete, run:

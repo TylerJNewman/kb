@@ -81,10 +81,18 @@
   footer{margin-top:4rem; color:var(--muted); font-size:.85rem; width:60%}
   @media (max-width:1000px){ footer{width:100%} }
   footer a{color:var(--muted)}
+  .page-nav{width:60%; margin:0 0 2rem; font-family:system-ui,-apple-system,sans-serif; font-size:.9rem}
+  .page-nav a + a{margin-left:1rem}
+  @media (max-width:1000px){.page-nav{width:100%}}
 </style>
 </head>
 <body>
 <article>
+
+  <nav class="page-nav" aria-label="Walkthrough navigation">
+    <a href="index.html">Back to onboarding</a>
+    <a href="index.html#hello">Start the five-minute setup</a>
+  </nav>
 
   <h1>kb</h1>
   <p class="subtitle">A filing clerk that lives in your terminal. Your AI thinks; kb does the paperwork.</p>
@@ -110,7 +118,7 @@
         │   • then PRINT a playbook ──────────┼───┐
         └─────────────────────────────────────┘   │
                                                    │  "read the raw source,
-                                                   │   write a Basic Memory,
+                                                   │   write a Memory,
                                                    ▼   update one index line"
         ┌─────────────────────────────────────┐
         │           your AI agent             │   the thinking.
@@ -140,10 +148,9 @@
   <h2><span class="num">III.</span>The hello-world pipeline</h2>
 
   <figure>
-<pre>  kb start (optional) ───▶ kb new ───▶ kb add &lt;path&gt; ───▶ (AI writes Memory + index line) ───▶ status/search
-  ───────────────────      ────────    ─────────────      ───────────────────────────────       ─────────────
-  print walkthrough        make a KB   copy source into   memory + catalog line                 confirm / ask
-  initialize nothing       ~/kb/...    raw/ + playbook    in memories/ + index.md               your notes</pre>
+<pre>  kb start ──▶ kb new ──▶ kb add --in research ──▶ AI follows complete playbook ──▶ receipt ──▶ status/search
+  ────────    ────────    ───────────────────      ────────────────────────────      ───────     ─────────────
+  print help  make a KB   stage pending handoff    Memory + index + --complete       finished    confirm / ask</pre>
   </figure>
 
   <h2><span class="num">IV.</span>A toy run</h2>
@@ -151,7 +158,14 @@
   <p>Copy, paste, watch. The arrow marks the one step the agent does, not kb.</p>
 
   <figure>
-<pre class="console"><b>$</b> npm i -g @tylerjnewman/kb        <i># one-time install</i>
+<pre class="console"><b>$</b> curl -fsSL https://bun.com/install | bash   <i># one-time runtime install</i>
+<b>$</b> export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+<b>$</b> export PATH="$BUN_INSTALL/bin:$PATH"
+<b>$</b> bun install --global @tylerjnewman/kb
+<b>$</b> kb --version
+kb 0.1.2
+<b>$</b> git --version                              <i># required when kb creates a KB</i>
+git version 2.x
 
 <b>$</b> kb start                         <i># optional: prints help; initializes nothing</i>
 First run
@@ -159,10 +173,10 @@ First run
 KB Home: /Users/you/kb
 
 1. Create your first KB: kb new research
-2. Add one raw source: kb add hello.txt
-3. Agent step: follow the printed Playbook.
-4. Search what the agent wrote: kb search "hello world"
-5. Check state: kb status
+2. Create and stage one source: kb add hello.txt --in research
+3. Agent step: give the complete printed Playbook to your AI.
+4. After its Completed Add handoff receipt: kb status --in research
+5. Search what it wrote: kb search "hello world" --in research
 
 <b>$</b> kb new research
 Created KB: research
@@ -171,7 +185,7 @@ Default: research
 Next: kb add &lt;file-or-url&gt;
 
 <b>$</b> echo "Vector search beats keyword search for fuzzy recall." &gt; paper.txt
-<b>$</b> kb add paper.txt
+<b>$</b> kb add paper.txt --in research
 Add playbook
 Raw source: raw/paper-0123456789ab.txt   <i># the 12-character hash varies</i>
 Memory target: memories/paper.md
@@ -180,16 +194,23 @@ URL behavior: local file copied verbatim into raw/.
 Agent half:
 1. Read raw/paper-0123456789ab.txt without editing it.
 2. Check memories/ and index.md for an existing Memory on this subject first.
-3. Write memories/paper.md in Basic Memory note format.
+3. Write memories/paper.md in kb's standard markdown Memory format.
 4. Include an executive summary of about 150 words or less.
 5. Extract observations as "- [category] fact #tag".
 6. Extract relations as "- relates_to [[Target]]".
 7. Add or update one index.md line: - [[memories/paper.md|Paper]] | category: &lt;category&gt; | summary: &lt;one-line summary&gt;
+8. When the Memory exists and its index.md line is present, run:
+   kb add --complete raw/paper-0123456789ab.txt memories/paper.md --in research
+
+If this output is lost, run:
+  kb add --resume raw/paper-0123456789ab.txt --in research
 
         │
-        ▼   <i>(your AI writes the Memory and updates index.md)</i>
+        ▼   <i>(your AI writes the Memory, updates index.md, and runs step 8)</i>
 
-<b>$</b> kb status
+Completed Add handoff: raw/paper-0123456789ab.txt -&gt; memories/paper.md
+
+<b>$</b> kb status --in research
 KB: research
 Path: /Users/you/kb/research
 Arm: b0 (plain markdown)
@@ -201,8 +222,8 @@ Health: ok
 Advisor:
 - No suggestions.
 
-<b>$</b> kb search "vector search"</pre>
-    <figcaption>The walkthrough text is all <code>kb start</code> returns; <code>kb new</code> is the first command that creates anything. There is no special source inbox. Here <code>paper.txt</code> is relative to the terminal's current directory. You can instead pass <code>~/Downloads/paper.pdf</code> or an absolute path. <code>kb add</code> leaves the original in place and copies its contents into the selected KB's <code>raw/</code> folder. <code>/Users/you</code> represents your actual home directory.</figcaption>
+<b>$</b> kb search "vector search" --in research</pre>
+    <figcaption>The walkthrough text is all <code>kb start</code> returns; <code>kb new</code> is the first command that creates anything. There is no special source inbox. Here <code>paper.txt</code> is relative to the terminal's current directory. You can instead pass <code>~/Downloads/paper.pdf</code> or an absolute path. <code>kb add</code> leaves the original in place and copies its contents into the selected KB's <code>raw/</code> folder. The explicit target prevents another KB from receiving the tutorial source. <code>/Users/you</code> represents your actual home directory.</figcaption>
   </figure>
 
   <h2><span class="num">V.</span>The "grow later" moment</h2>
@@ -221,10 +242,12 @@ Advisor:
                               Arm: b1. Existing files unchanged.   ← SAME files
                                                 │
                                                 ▼
-                              kb search now uses a real engine
-                              (Basic Memory) over the same markdown</pre>
+                              kb search now uses the optional local search
+                              engine, Basic Memory, over the same markdown</pre>
     <figcaption>Upgrade is an engine swap behind the same files. Nothing moves. Nothing is rewritten.</figcaption>
   </figure>
+
+  <p>Basic Memory is a search helper that kb installs and drives for you. You do not need to install it or learn it for the beginner flow.</p>
 
   <h2><span class="num">VI.</span>The whole verb set</h2>
 
@@ -263,7 +286,8 @@ Advisor:
 
   <hr>
   <footer>
-    <p>kb is local-first plain markdown. Source: <a href="https://github.com/TylerJNewman/kb">TylerJNewman/kb</a>. This page has no external resources.</p>
+    <p><a href="index.html">Back to onboarding</a> · <a href="index.html#hello">Start the five-minute setup</a></p>
+    <p>kb is local-first plain markdown. Source: <a href="https://github.com/TylerJNewman/kb">TylerJNewman/kb</a>. This page loads no external resources.</p>
   </footer>
 
 </article>

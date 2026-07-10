@@ -19,7 +19,7 @@ Plain-language, ASCII, copy-paste. The basics in five minutes.
         │   • then PRINT a playbook ──────────┼───┐
         └─────────────────────────────────────┘   │
                                                    │  "read the raw source,
-                                                   │   write a Basic Memory,
+                                                   │   write a Memory,
                                                    ▼   update one index line"
         ┌─────────────────────────────────────┐
         │           your AI agent             │   ← the thinking.
@@ -52,10 +52,10 @@ For a beginner, do **not** open a random folder first. Run `kb new research` fro
 ## 3. The hello-world pipeline
 
 ```
-  kb start (optional) ───▶ kb new ───▶ kb add <path> ───▶ (AI writes Memory + index line) ───▶ status/search
-  ───────────────────      ────────    ─────────────      ───────────────────────────────       ─────────────
-  print walkthrough        make a KB   copy source into   memory + catalog line                 confirm / ask
-  initialize nothing       ~/kb/...    raw/ + playbook    in memories/ + index.md               your notes
+  kb start (optional) ──▶ kb new ──▶ kb add --in research ──▶ AI follows complete playbook ──▶ receipt ──▶ status/search
+  ───────────────────     ────────    ───────────────────     ────────────────────────────      ───────     ─────────────
+  print walkthrough       make a KB   stage source + pending  Memory + index + --complete       confirms    confirm / ask
+  initialize nothing      ~/kb/...    handoff                  command                            finished    your notes
 ```
 
 ---
@@ -63,7 +63,14 @@ For a beginner, do **not** open a random folder first. Run `kb new research` fro
 ## 4. Toy run — copy/paste and watch
 
 ```console
-$ npm i -g @tylerjnewman/kb        # one-time install
+$ curl -fsSL https://bun.com/install | bash   # one-time runtime install
+$ export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+$ export PATH="$BUN_INSTALL/bin:$PATH"
+$ bun install --global @tylerjnewman/kb
+$ kb --version
+kb 0.1.2
+$ git --version                              # required when kb creates a KB
+git version 2.x
 
 $ kb start                         # optional: prints help; initializes nothing
 First run
@@ -71,10 +78,10 @@ First run
 KB Home: /Users/you/kb
 
 1. Create your first KB: kb new research
-2. Add one raw source: kb add hello.txt
-3. Agent step: follow the printed Playbook.
-4. Search what the agent wrote: kb search "hello world"
-5. Check state: kb status
+2. Create and stage one source: kb add hello.txt --in research
+3. Agent step: give the complete printed Playbook to your AI.
+4. After its Completed Add handoff receipt: kb status --in research
+5. Search what it wrote: kb search "hello world" --in research
 
 $ kb new research
 Created KB: research
@@ -83,7 +90,7 @@ Default: research
 Next: kb add <file-or-url>
 
 $ echo "Vector search beats keyword search for fuzzy recall." > paper.txt
-$ kb add paper.txt
+$ kb add paper.txt --in research
 Add playbook
 Raw source: raw/paper-0123456789ab.txt   # the 12-character hash varies
 Memory target: memories/paper.md
@@ -92,16 +99,23 @@ URL behavior: local file copied verbatim into raw/.
 Agent half:
 1. Read raw/paper-0123456789ab.txt without editing it.
 2. Check memories/ and index.md for an existing Memory on this subject first.
-3. Write memories/paper.md in Basic Memory note format.
+3. Write memories/paper.md in kb's standard markdown Memory format.
 4. Include an executive summary of about 150 words or less.
 5. Extract observations as "- [category] fact #tag".
 6. Extract relations as "- relates_to [[Target]]".
 7. Add or update one index.md line: - [[memories/paper.md|Paper]] | category: <category> | summary: <one-line summary>
+8. When the Memory exists and its index.md line is present, run:
+   kb add --complete raw/paper-0123456789ab.txt memories/paper.md --in research
+
+If this output is lost, run:
+  kb add --resume raw/paper-0123456789ab.txt --in research
 
         |
-        v   (your AI writes the Memory and updates index.md)
+        v   (your AI writes the Memory, updates index.md, and runs step 8)
 
-$ kb status
+Completed Add handoff: raw/paper-0123456789ab.txt -> memories/paper.md
+
+$ kb status --in research
 KB: research
 Path: /Users/you/kb/research
 Arm: b0 (plain markdown)
@@ -113,12 +127,14 @@ Health: ok
 Advisor:
 - No suggestions.
 
-$ kb search "vector search"
+$ kb search "vector search" --in research
 ```
 
 There is no special inbox where you must drop a file. In this example, `paper.txt` is in the terminal's current directory, so `kb add paper.txt` uses that relative path. You could instead run `kb add ~/Downloads/paper.pdf` or pass any absolute path.
 
-`kb add` leaves the original where it is and copies its contents into the selected KB's `raw/` folder. `/Users/you` represents your actual home directory, and `kb new` prints the real absolute path.
+`kb add` leaves the original where it is and copies its contents into the selected KB's `raw/` folder. The explicit `--in research` keeps the tutorial from targeting another KB when your terminal is inside one. `/Users/you` represents your actual home directory, and `kb new` prints the real absolute path.
+
+The AI must follow the complete playbook, including its generated `kb add --complete` command. Before that receipt, `kb status` may correctly report `Health: unfinished work`.
 
 The walkthrough text in the example is all `kb start` returns. The first command that creates anything is `kb new`.
 
@@ -138,11 +154,11 @@ The walkthrough text in the example is all `kb start` returns. The first command
                               Arm: b1. Existing files unchanged.   # SAME files
                                                 |
                                                 v
-                              kb search now uses a real engine
-                              (Basic Memory) over the same markdown
+                              kb search now uses the optional local search
+                              engine, Basic Memory, over the same markdown
 ```
 
-You upgrade only when you feel the pain — and `kb` tells you *why* at that moment. The Advisor suggests; it never acts.
+Basic Memory is a search helper that `kb` installs and drives for you; beginners do not need to install or learn it. You upgrade only when you feel the pain — and `kb` tells you *why* at that moment. The Advisor suggests; it never acts.
 
 ---
 

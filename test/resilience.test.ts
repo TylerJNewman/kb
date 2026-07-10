@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
@@ -155,10 +155,13 @@ test("an untouched draft is unfinished and excluded from search", async () => {
 
 test("Reflect keeps its worklist pending until explicit completion", async () => {
   const kbDir = await createResearchKb();
+  const topicPath = join(kbDir, "memories", "topic.md");
   await writeFile(
-    join(kbDir, "memories", "topic.md"),
+    topicPath,
     "---\ntitle: Topic\npermalink: topic\n---\n\nChanged fact.\n",
   );
+  const topicChangedAt = new Date("2026-07-10T11:00:00.000Z");
+  await utimes(topicPath, topicChangedAt, topicChangedAt);
 
   const first = await harness.run("kb", ["reflect", "--in", "research"], {
     env: { KB_NOW: "2026-07-10T12:00:00.000Z" },

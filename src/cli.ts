@@ -365,7 +365,7 @@ Rules of thumb:
   Start with: kb start
   kb start prints the first-run path: new -> add -> agent writes Memory -> search -> status.
   kb new creates under KB Home: ~/kb/<name>/; kb init scaffolds the cwd.
-  The default Arm is b0: plain markdown, Basic Memory format, Engine disabled.
+  The default Arm is b0: plain markdown, standard Memory format, Engine disabled.
   Scaffold Arms: wiki, b0. b1 is reached with kb enable search; b2 is deferred.
   Retrieval favors b0/b1; curation favors wiki.
   Drift tax rises with eager wiki curation; use kb check and reflect when it does.
@@ -414,6 +414,7 @@ Usage:
   kb new <name> [--arm wiki|b0]
 
 Rules of thumb:
+  Git must be on PATH because kb new initializes the KB as a git repo.
   Omit --arm for the default b0 KB. Use --arm wiki only when the human has explicitly chosen it.
   Name must be one path segment, for example: research, papers-2026.
 `;
@@ -452,13 +453,17 @@ Bring in one raw source, then print the Add playbook for the agent.
 
 Usage:
   kb add <file-or-url> [--in <name>]
+  kb add --resume <raw-ref> [--in <name>]
+  kb add --complete <raw-ref> <memory-ref> [--in <name>]
 
 Rules of thumb:
-  add preserves raw/ and asks the agent to write or update a Memory.
+  add preserves raw/ and prints the complete agent playbook.
+  The agent normally runs --complete after writing the Memory and index line.
+  Use --resume when the original printed playbook was lost.
 `,
     draft: `kb draft <title...>
 
-Create a blank Basic Memory-compatible Memory for the agent to write.
+Create a blank Memory in kb's standard markdown format for the agent to write.
 
 Usage:
   kb draft <title...> [--in <name>]
@@ -572,23 +577,36 @@ async function startKb(args: string[]): Promise<number> {
 
 KB Home: ${kbHome}
 
+Prerequisite: Git must be on PATH because kb new initializes a git repository.
+   git --version
+
 1. Create your first KB.
    kb new research
 
-2. Create and add one source. kb files it, then prints an Add playbook.
-   printf '%s\\n' 'hello world memory systems' > hello.txt
-   kb add hello.txt
+2. Create and stage one harmless source. kb files it, then prints an Add playbook.
+   sample_dir="$(mktemp -d)"
+   printf '%s\\n' 'Vector search helps with fuzzy recall.' > "$sample_dir/hello.txt"
+   kb add "$sample_dir/hello.txt" --in research
 
 3. Agent step: give the complete printed playbook to your AI agent.
    Playbook paths such as raw/... and memories/... are relative to ${kbRoot}.
+   The agent writes the Memory and index line, runs the final kb add --complete command,
+   and returns the Completed Add handoff receipt.
 
-4. After the agent writes the Memory and index line, confirm and search.
-   kb status
-   kb search "hello world"
+4. Only after that receipt, confirm, search, and optionally remove the sample.
+   kb status --in research
+   kb search "vector search" --in research
+   rm -rf "$sample_dir"
+
+Coming back or retrying?
+  Do not recreate an existing KB. Run: kb status --in research
+  If status lists unfinished Add work, recover its playbook with:
+    kb add --resume <raw-ref> --in research
+  Give the complete resumed playbook to the agent. "KB already exists" is a safe refusal.
 
 Rules of thumb:
   kb start is optional and read-only; it only prints this text.
-  Input paths passed to kb add are relative to cwd or absolute.
+  Input paths passed to kb add are relative to cwd or absolute; --in makes the tutorial target explicit.
   Playbook paths are relative to the selected KB root.
   kb does bookkeeping; the agent reads raw/, writes memories/, and updates index.md.
 `);
@@ -1772,7 +1790,7 @@ function reflectPlaybook(
     "",
     "Agent half:",
     "1. Read exactly the Memory refs listed above.",
-    "2. Write any useful cross-memory synthesis back into memories/ as Basic Memory-compatible Memories.",
+    "2. Write any useful cross-memory synthesis back into memories/ as standard markdown Memories.",
     "3. Add or update index.md lines only for Memories you actually create or revise.",
     "4. Do not claim contradiction detection, stale-fact judgment, or semantic consolidation as guaranteed by kb reflect.",
   );
@@ -1911,7 +1929,7 @@ URL behavior: ${urlBehavior}
 
 Agent half:
 1. Read ${rawRef} without editing it.
-2. Write or update ${memoryRef} in Basic Memory note format.
+2. Write or update ${memoryRef} in kb's standard markdown Memory format.
 3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
 4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
 5. Add or update one index.md line: ${indexLine(memoryRef, staged.title)}
