@@ -1772,13 +1772,23 @@ async function registerKb(name: string, path: string): Promise<boolean> {
 }
 
 async function loadRegistry(): Promise<Registry> {
-  return validateRegistry(await loadRegistryUnlocked());
+  try {
+    return await readRegistryFile();
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  // Re-check and rebuild while holding the same lock as registrations. Without
+  // this, an unlocked scan can replace a Registry that another process commits
+  // between the scan and the atomic rename.
+  return withRegistryLock(loadRegistryUnlocked);
 }
 
 async function loadRegistryUnlocked(): Promise<Registry> {
-  const path = registryPath();
   try {
-    return validateRegistry(parseRegistry(await readFile(path, "utf8")));
+    return await readRegistryFile();
   } catch (error) {
     if (!isNodeError(error) || error.code !== "ENOENT") {
       throw error;
@@ -1786,10 +1796,22 @@ async function loadRegistryUnlocked(): Promise<Registry> {
   }
 
   const registry = await scanKbHome();
+  const rebuildMarker = process.env.KB_TEST_REGISTRY_REBUILD_MARKER;
+  if (rebuildMarker !== undefined) {
+    await writeFile(rebuildMarker, "ready\n");
+  }
+  const rebuildPauseMs = Number(process.env.KB_TEST_PAUSE_REGISTRY_REBUILD_MS ?? 0);
+  if (Number.isFinite(rebuildPauseMs) && rebuildPauseMs > 0) {
+    await Bun.sleep(rebuildPauseMs);
+  }
   if (registry.kbs.size > 0) {
     await writeRegistryAtomically(registry);
   }
   return registry;
+}
+
+async function readRegistryFile(): Promise<Registry> {
+  return validateRegistry(parseRegistry(await readFile(registryPath(), "utf8")));
 }
 
 function parseRegistry(text: string): Registry {
@@ -1807,7 +1829,7 @@ function parseRegistry(text: string): Registry {
         throw new RegistryError("duplicate default");
       }
       const value = line.slice("default: ".length).trim();
-      defaultKb = value === "null" ? null : value;
+      defaultKb = value === "null" ? null : parseRegistryScalar(value, "default");
       inKbs = false;
       continue;
     }
@@ -1820,15 +1842,15 @@ function parseRegistry(text: string): Registry {
       continue;
     }
     if (inKbs) {
-      const match = /^  ([A-Za-z0-9._-]+): (.+)$/.exec(line);
+      const match = /^  ("[^"]+"|[A-Za-z0-9._-]+): (.+)$/.exec(line);
       if (match === null) {
         throw new RegistryError(`invalid entry line: ${line}`);
       }
-      const name = match[1]!;
+      const name = parseRegistryScalar(match[1]!, "KB name");
       if (kbs.has(name)) {
         throw new RegistryError(`duplicate KB entry: ${name}`);
       }
-      kbs.set(name, match[2]!);
+      kbs.set(name, parseRegistryScalar(match[2]!, `path for KB: ${name}`));
       continue;
     }
     throw new RegistryError(`invalid Registry line: ${line}`);
@@ -1862,16 +1884,56 @@ function validateRegistry(registry: Registry): Registry {
   if (registry.kbs.size === 0 && registry.defaultKb !== null) {
     throw new RegistryError("empty Registry requires null default");
   }
+  if (registry.kbs.size > 0 && registry.defaultKb === null) {
+    throw new RegistryError("nonempty Registry requires a default");
+  }
   return registry;
 }
 
 function serializeRegistry(registry: Registry): string {
   const validated = validateRegistry(registry);
-  const lines = [`default: ${registry.defaultKb ?? "null"}`, "kbs:"];
+  const lines = [`default: ${validated.defaultKb === null ? "null" : serializeRegistryScalar(validated.defaultKb)}`, "kbs:"];
   for (const [name, path] of sortedRegistryEntries(validated)) {
-    lines.push(`  ${name}: ${path}`);
+    lines.push(`  ${serializeRegistryScalar(name)}: ${serializeRegistryScalar(path)}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function parseRegistryScalar(value: string, label: string): string {
+  if (value.startsWith('"')) {
+    try {
+      const decoded = JSON.parse(value) as unknown;
+      if (typeof decoded === "string") {
+        return decoded;
+      }
+    } catch {
+      // Report the Registry domain error below.
+    }
+    throw new RegistryError(`invalid quoted ${label}`);
+  }
+  // Keep reading the legacy plain-scalar form. Successful mutations rewrite
+  // YAML-sensitive values using the canonical quoted representation below.
+  return value;
+}
+
+function serializeRegistryScalar(value: string): string {
+  return isSafeYamlPlainScalar(value) ? value : JSON.stringify(value);
+}
+
+function isSafeYamlPlainScalar(value: string): boolean {
+  if (value.length === 0 || value.trim() !== value || /[\u0000-\u001f\u007f]/.test(value)) {
+    return false;
+  }
+  if (/^(?:null|~|true|false|yes|no|on|off|[-+]?\d+(?:\.\d+)?)$/i.test(value)) {
+    return false;
+  }
+  if (/^[!&*{}\[\],#|>@`'"]/.test(value) || /^[?:-](?:\s|$)/.test(value)) {
+    return false;
+  }
+  if (/[{}\[\],]/.test(value) || /:(?:\s|[{}\[\],])/.test(value) || value.includes(" #")) {
+    return false;
+  }
+  return true;
 }
 
 async function writeRegistryAtomically(registry: Registry): Promise<void> {

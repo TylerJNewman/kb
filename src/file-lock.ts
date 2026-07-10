@@ -14,8 +14,13 @@ export async function withFileLock<T>(options: FileLockOptions, action: () => Pr
   const timeoutMs = options.timeoutMs ?? 2_000;
   const staleMs = options.staleMs ?? 10_000;
   const deadline = Date.now() + timeoutMs;
+  const recoveryPath = `${options.lockPath}.recovery`;
 
   while (true) {
+    if (await pathExists(recoveryPath)) {
+      await waitForRetry(options, deadline);
+      continue;
+    }
     try {
       await mkdir(options.lockPath);
       try {
@@ -33,11 +38,8 @@ export async function withFileLock<T>(options: FileLockOptions, action: () => Pr
       if (!isNodeError(error) || error.code !== "EEXIST") {
         throw options.createError(`${options.label} lock acquisition failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-      await recoverStaleLock(options.lockPath, staleMs);
-      if (Date.now() >= deadline) {
-        throw options.createError(`${options.label} lock acquisition timed out`);
-      }
-      await Bun.sleep(25);
+      await recoverStaleLock(options.lockPath, recoveryPath, staleMs);
+      await waitForRetry(options, deadline);
     }
   }
 
@@ -48,7 +50,24 @@ export async function withFileLock<T>(options: FileLockOptions, action: () => Pr
   }
 }
 
-async function recoverStaleLock(lockPath: string, staleMs: number): Promise<void> {
+async function recoverStaleLock(lockPath: string, recoveryPath: string, staleMs: number): Promise<void> {
+  try {
+    await mkdir(recoveryPath);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "EEXIST") {
+      return;
+    }
+    throw error;
+  }
+
+  try {
+    await recoverStaleLockWhileSerialized(lockPath, staleMs);
+  } finally {
+    await rm(recoveryPath, { recursive: true, force: true });
+  }
+}
+
+async function recoverStaleLockWhileSerialized(lockPath: string, staleMs: number): Promise<void> {
   let owner: { pid?: unknown; createdAt?: unknown };
   try {
     owner = JSON.parse(await readFile(join(lockPath, "owner"), "utf8")) as { pid?: unknown; createdAt?: unknown };
@@ -68,6 +87,25 @@ async function recoverStaleLock(lockPath: string, staleMs: number): Promise<void
     return;
   }
   await rm(lockPath, { recursive: true, force: true });
+}
+
+async function waitForRetry(options: FileLockOptions, deadline: number): Promise<void> {
+  if (Date.now() >= deadline) {
+    throw options.createError(`${options.label} lock acquisition timed out`);
+  }
+  await Bun.sleep(25);
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function removeIfStale(lockPath: string, staleMs: number): Promise<void> {
