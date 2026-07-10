@@ -908,6 +908,22 @@ Results: 1
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("query | retrieval");
 });
 
+test("kb read resolves the canonical title, permalink, filename, and full Memory ref", async () => {
+  await scaffoldResearchKb();
+  const title = `Example: \"Quoted\" 研究`;
+  const created = await harness.runKb(["draft", title, "--in", "research"]);
+  const ref = created.stdout.trim().replace("Created ", "");
+  const permalink = ref.replace(/^memories\//, "").replace(/\.md$/, "");
+  const filename = ref.replace(/^memories\//, "");
+
+  for (const identity of [title, permalink, filename, ref]) {
+    const result = await harness.runKb(["read", identity, "--in", "research"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(`title: "Example: \\"Quoted\\" 研究"`);
+  }
+});
+
 test("kb search uses the pinned Basic Memory runner when the Engine is enabled and keeps the normalized output contract", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
@@ -1007,6 +1023,32 @@ Line format:
   });
 });
 
+test("kb search rejects malformed Engine entries instead of returning partial truth", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    basicMemoryUvxScript(`
+if [ "$1" = "tool" ] && [ "$2" = "search-notes" ]; then
+  echo '{"results":[{"title":"Valid","file_path":"memories/valid.md","matched_chunk":"needle"},{"title":"Broken"}]}'
+  exit 0
+fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["search", "needle", "--in", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory JSON contained an unreadable result.\n",
+  });
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
+});
+
 test("kb status prints counts, health, and an empty Advisor slot for fixture state", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
@@ -1046,6 +1088,105 @@ Advisor:
   });
   expect(result.stdout).not.toContain("reflect");
   expect(result.stdout).not.toContain("enable search");
+});
+
+test("status, plain search, check, and reflect share one decoded Memory identity", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  await harness.runKb(["new", "wiki-research", "--arm", "wiki"]);
+  const kbDir = join(harness.home, "kb", "wiki-research");
+  const title = `Example: \"Quoted\" 研究`;
+  await writeFile(join(kbDir, "memories", "example.md"), `---
+title: "Example: \\"Quoted\\" 研究"
+type: note
+tags:
+  - research
+permalink: canonical-example
+example_link: [[Frontmatter Ghost]]
+---
+
+- relates_to [[Target Memory]]
+
+Retrieval truth. See [[Natural Target]], [[memories/ref-target.md|Reference Alias]], and [[slug-target]].
+`);
+  await writeMemory(kbDir, "natural-target.md", "Natural Target", "natural-target", "", "See [[canonical-example]].\n");
+  await writeMemory(kbDir, "ref-target.md", "Reference Target", "ref-target", "", "See [[canonical-example]].\n");
+  await writeMemory(kbDir, "slug-target.md", "Slug Target", "slug-target", "", "See [[canonical-example]].\n");
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+${INDEX_LINE_FORMAT}
+${indexLine("memories/example.md", title, "research", "Retrieval truth.")}
+${indexLine("memories/natural-target.md", "Natural Target", "research", "Target.")}
+${indexLine("memories/ref-target.md", "Reference Target", "research", "Target.")}
+${indexLine("memories/slug-target.md", "Slug Target", "research", "Target.")}
+`);
+
+  const status = await harness.runKb(["status", "--in", "wiki-research"]);
+  const search = await harness.runKb(["search", "retrieval", "--in", "wiki-research"]);
+  const check = await harness.runKb(["check", "--in", "wiki-research"]);
+  const reflect = await harness.run("kb", ["reflect", "--in", "wiki-research"], {
+    env: { KB_NOW: "2026-07-09T12:00:00.000Z" },
+  });
+
+  expect(status.stdout).toContain("Health: ok\n");
+  expect(search.stdout).toContain(`memories/example.md | ${title}\n`);
+  expect(check.stdout).toContain("Dangling [[links]]:\n- None\n");
+  expect(check.stdout).not.toContain("Frontmatter Ghost");
+  expect(check.stdout).not.toContain("Target Memory");
+  expect(check.stdout).toContain("Duplicate slugs:\n- None\n");
+  expect(reflect.stdout).toContain(`memories/example.md | ${title}\n`);
+});
+
+test("malformed Memory and catalog state is unhealthy, checkable, and blocks search and reflect", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "memories", "broken.md"), `---
+title: Broken
+type: note
+tags:
+  - research
+---
+
+This content would otherwise match needle.
+`);
+  await writeMemory(kbDir, "valid.md", "Canonical Title", "valid");
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+${INDEX_LINE_FORMAT}
+- [[memories/broken.md|Broken]] category: research
+- [[memories/valid.md|Different Title]] | category: research | summary: Mismatch.
+`);
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+
+  const status = await harness.runKb(["status", "--in", "research"]);
+  const check = await harness.runKb(["check", "--in", "research"]);
+  const search = await harness.runKb(["search", "needle", "--in", "research"]);
+  const reflect = await harness.run("kb", ["reflect", "--in", "research"], {
+    env: { KB_NOW: "2026-07-09T12:00:00.000Z" },
+  });
+
+  expect(status.code).toBe(0);
+  expect(status.stdout).toContain("Health: unhealthy (3 document format errors; run `kb check`)\n");
+  expect(check.code).toBe(0);
+  expect(check.stdout).toContain(`Format errors:
+- memories/broken.md: frontmatter is missing permalink
+- index.md:5: malformed catalog entry
+- index.md:6: catalog title "Different Title" does not match memories/valid.md title "Canonical Title"
+`);
+  expect(search).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid KB documents: memories/broken.md: frontmatter is missing permalink; run `kb check`\n",
+  });
+  expect(reflect).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid KB documents: memories/broken.md: frontmatter is missing permalink; run `kb check`\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
 });
 
 test("kb status Advisor suggests enable search at the index threshold only", async () => {
@@ -1109,6 +1250,23 @@ uvx --from basic-memory==0.22.1 bm project add research ${kbDir}
 uvx --from basic-memory==0.22.1 bm project list --json
 uvx --from basic-memory==0.22.1 bm reindex --project research --search
 `);
+});
+
+test("kb enable search validates canonical documents before external Engine work", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "memories", "broken.md"), "# Missing Basic Memory frontmatter\n");
+  await harness.writeFakeExecutable("uvx", recordingBasicMemoryUvxScript("exit 0"));
+
+  const result = await harness.runKb(["enable", "search", "--in", "research"]);
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid KB documents: memories/broken.md: missing Basic Memory frontmatter; run `kb check`\n",
+  });
+  expect(await readdir(harness.home)).not.toContain("engine-calls");
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
 });
 
 test("populated B0 enables B1 search with zero content migration", async () => {

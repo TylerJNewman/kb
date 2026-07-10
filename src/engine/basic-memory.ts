@@ -101,10 +101,15 @@ export class BasicMemoryAdapter implements SearchEngineAdapter {
       return { ok: false, message: "Basic Memory JSON did not include results." };
     }
 
-    return {
-      ok: true,
-      value: parsed.results.map((result) => normalizeBasicMemoryResult(result)).filter((result): result is EngineSearchResult => result !== null),
-    };
+    const results: EngineSearchResult[] = [];
+    for (const result of parsed.results) {
+      const normalized = normalizeBasicMemoryResult(result);
+      if (normalized === null) {
+        return { ok: false, message: "Basic Memory JSON contained an unreadable result." };
+      }
+      results.push(normalized);
+    }
+    return { ok: true, value: results };
   }
 }
 

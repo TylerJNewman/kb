@@ -1,16 +1,15 @@
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, extname, join, parse, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve } from "node:path";
 import { BasicMemoryAdapter } from "./engine/basic-memory";
+import { readKbDocuments, type CanonicalMemory, type KbDocuments } from "./kb-documents";
 import { KbConfigCommitError, KbConfigError, readKbConfig, serializeKbConfig, updateKbConfig, type KbConfig } from "./kb-config";
 import {
   INDEX_LINE_FORMAT,
   indexLine,
   memoryFormatPlaybookLines,
   memoryTemplate,
-  parseIndexLine,
-  readBasicMemoryScalar,
   slugForMemoryTitle,
   validateMemoryTitle,
 } from "./memory-format";
@@ -799,8 +798,9 @@ async function statusKb(kbName: string | null): Promise<number> {
   }
 
   const config = await readKbConfig(target.path);
-  const counts = await countKbFiles(target.path);
-  const health = await healthSummary(target.path);
+  const documents = await readKbDocuments(target.path);
+  const counts = await countKbFiles(target.path, documents);
+  const health = await healthSummary(target.path, documents);
   const advisor = advisorSuggestions(config, counts);
 
   process.stdout.write(`KB: ${target.name}
@@ -831,6 +831,10 @@ async function enableKb(kbName: string | null, args: string[]): Promise<number> 
   }
 
   const config = await readKbConfig(target.path);
+  const documents = await readKbDocuments(target.path);
+  if (!ensureValidDocuments(documents)) {
+    return EXIT_USAGE;
+  }
   if (config.engineState === "enabled") {
     process.stdout.write(`Search already enabled for ${target.name}.\n`);
     return 0;
@@ -878,6 +882,10 @@ async function searchKb(kbName: string | null, args: string[]): Promise<number> 
   }
 
   const config = await readKbConfig(target.path);
+  const documents = await readKbDocuments(target.path);
+  if (!ensureValidDocuments(documents)) {
+    return EXIT_USAGE;
+  }
   let results: SearchResult[];
   if (config.engineState === "enabled") {
     const searched = await new BasicMemoryAdapter().search(target.path, config.engineProject ?? target.name, query);
@@ -885,9 +893,14 @@ async function searchKb(kbName: string | null, args: string[]): Promise<number> 
       writeError(`search engine failed; engineless fallback was not used. ${searched.message}`);
       return EXIT_UNAVAILABLE;
     }
-    results = searched.value.map((result) => ({ ...result, source: "memory" }));
+    const memoriesByRef = new Map(documents.memories.map((memory) => [memory.ref, memory]));
+    results = searched.value.map((result) => ({
+      ...result,
+      title: memoriesByRef.get(result.ref)?.title ?? result.title,
+      source: "memory",
+    }));
   } else {
-    results = await searchFiles(target.path, query);
+    results = searchFiles(documents, query);
   }
 
   await appendLogEntry(target.path, "query", query);
@@ -997,14 +1010,19 @@ async function readMemory(kbName: string | null, args: string[]): Promise<number
     return EXIT_USAGE;
   }
 
-  const memoryPath = await resolveMemoryRef(target.path, args[0]);
-  if (memoryPath === null) {
+  const documents = await readKbDocuments(target.path);
+  const matches = resolveCanonicalMemory(target.path, documents, args[0]);
+  if (matches.length === 0) {
     writeError(`memory not found: ${args[0]}; try kb search "${args[0]}" or inspect index.md`);
+    return EXIT_USAGE;
+  }
+  if (matches.length > 1) {
+    writeError(`memory ref is ambiguous: ${args[0]}; use a full memories/<file>.md ref`);
     return EXIT_USAGE;
   }
 
   process.stdout.write(`Tiered read order: index.md -> executive summary -> derivatives in memories/ -> raw sources only when needed.\n\n`);
-  process.stdout.write(await readFile(memoryPath, "utf8"));
+  process.stdout.write(matches[0].text);
   return 0;
 }
 
@@ -1021,7 +1039,11 @@ async function reflectKb(kbName: string | null, args: string[]): Promise<number>
   }
 
   const config = await readKbConfig(target.path);
-  const changed = await changedMemoriesSince(target.path, config.lastReflectAt);
+  const documents = await readKbDocuments(target.path);
+  if (!ensureValidDocuments(documents)) {
+    return EXIT_USAGE;
+  }
+  const changed = changedMemoriesSince(documents, config.lastReflectAt);
   const now = nowInstant();
   await updateKbConfig(target.path, (current) => ({ ...current, lastReflectAt: now }));
   await appendLogEntry(target.path, "reflect", `${changed.length} memories`);
@@ -1042,9 +1064,10 @@ async function checkKb(kbName: string | null, args: string[]): Promise<number> {
   }
 
   const config = await readKbConfig(target.path);
-  const defrag = await defragCandidates(target.path);
-  const wiki = config.arm === "wiki" ? await wikiLintIssues(target.path) : null;
-  process.stdout.write(checkPlaybook(defrag, wiki));
+  const documents = await readKbDocuments(target.path);
+  const defrag = defragCandidates(documents);
+  const wiki = config.arm === "wiki" ? wikiLintIssues(documents) : null;
+  process.stdout.write(checkPlaybook(defrag, wiki, documents.issues));
   return 0;
 }
 
@@ -1158,18 +1181,15 @@ type KbCounts = {
   indexBytes: number;
 };
 
-async function countKbFiles(kbPath: string): Promise<KbCounts> {
-  const [sources, memories, index] = await Promise.all([
-    countFiles(join(kbPath, "raw")),
-    countMarkdownFiles(join(kbPath, "memories")),
-    readOptionalFile(join(kbPath, "index.md")),
-  ]);
+async function countKbFiles(kbPath: string, documents?: KbDocuments): Promise<KbCounts> {
+  const decoded = documents ?? await readKbDocuments(kbPath);
+  const sources = await countFiles(join(kbPath, "raw"));
 
   return {
     sources,
-    memories,
-    indexEntries: indexEntryLines(index).length,
-    indexBytes: Buffer.byteLength(index),
+    memories: decoded.memoryFileCount,
+    indexEntries: decoded.catalog.length,
+    indexBytes: Buffer.byteLength(decoded.indexText),
   };
 }
 
@@ -1184,36 +1204,27 @@ async function countFiles(path: string): Promise<number> {
   }
 }
 
-async function countMarkdownFiles(path: string): Promise<number> {
-  try {
-    return (await readdir(path, { withFileTypes: true })).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).length;
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return 0;
-    }
-    throw error;
-  }
-}
-
-async function readOptionalFile(path: string): Promise<string> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return "";
-    }
-    throw error;
-  }
-}
-
-async function healthSummary(kbPath: string): Promise<string> {
+async function healthSummary(kbPath: string, documents: KbDocuments): Promise<string> {
   const required = ["kb.yaml", "index.md", "log.md", "raw", "memories"];
   for (const name of required) {
     if (!(await exists(join(kbPath, name)))) {
       return `missing ${name}`;
     }
   }
+  if (documents.issues.length > 0) {
+    const noun = documents.issues.length === 1 ? "error" : "errors";
+    return `unhealthy (${documents.issues.length} document format ${noun}; run \`kb check\`)`;
+  }
   return "ok";
+}
+
+function ensureValidDocuments(documents: KbDocuments): boolean {
+  const firstIssue = documents.issues[0];
+  if (firstIssue === undefined) {
+    return true;
+  }
+  writeError(`invalid KB documents: ${firstIssue}; run \`kb check\``);
+  return false;
 }
 
 type SearchResult = {
@@ -1224,16 +1235,13 @@ type SearchResult = {
   score: number;
 };
 
-async function searchFiles(kbPath: string, query: string): Promise<SearchResult[]> {
+function searchFiles(documents: KbDocuments, query: string): SearchResult[] {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const byRef = new Map<string, SearchResult>();
-  const index = await readFile(join(kbPath, "index.md"), "utf8");
+  const indexLines = documents.indexText.split("\n");
 
-  for (const line of indexEntryLines(index)) {
-    const parsed = parseIndexLine(line);
-    if (parsed === null) {
-      continue;
-    }
+  for (const parsed of documents.catalog) {
+    const line = indexLines[parsed.line - 1] ?? "";
     const score = scoreText(line, terms);
     if (score > 0) {
       byRef.set(parsed.ref, {
@@ -1246,12 +1254,8 @@ async function searchFiles(kbPath: string, query: string): Promise<SearchResult[
     }
   }
 
-  for (const entry of await readdir(join(kbPath, "memories"), { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".md")) {
-      continue;
-    }
-    const ref = `memories/${entry.name}`;
-    const text = await readFile(join(kbPath, ref), "utf8");
+  for (const memory of documents.memories) {
+    const { ref, text } = memory;
     const score = scoreText(text, terms);
     if (score === 0) {
       continue;
@@ -1269,7 +1273,7 @@ async function searchFiles(kbPath: string, query: string): Promise<SearchResult[
 
     byRef.set(ref, {
       ref,
-      title: titleFromMemory(text) ?? titleFromSlug(entry.name.slice(0, -".md".length)),
+      title: memory.title,
       source: "memory",
       match: firstMatchingLine(text, terms),
       score,
@@ -1300,10 +1304,6 @@ function singleLineMatch(value: string): string {
   return oneLine.length <= 240 ? oneLine : `${oneLine.slice(0, 237)}...`;
 }
 
-function indexEntryLines(index: string): string[] {
-  return index.split("\n").filter((line) => line.startsWith("- [[") && !line.includes("<file>"));
-}
-
 function scoreText(text: string, terms: string[]): number {
   const lower = text.toLowerCase();
   return terms.reduce((score, term) => score + lower.split(term).length - 1, 0);
@@ -1317,45 +1317,12 @@ function firstMatchingLine(text: string, terms: string[]): string {
   return line?.trim() ?? "";
 }
 
-function titleFromMemory(text: string): string | null {
-  const title = readBasicMemoryScalar(text, "title");
-  return title === null || title.length === 0 ? null : title;
-}
-
-type MemoryInfo = {
-  ref: string;
-  title: string;
-  slug: string;
-  supersededBy: string | null;
-  mtimeMs: number;
-};
-
-async function listMemories(kbPath: string): Promise<MemoryInfo[]> {
-  const memories: MemoryInfo[] = [];
-  for (const entry of await readdir(join(kbPath, "memories"), { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".md")) {
-      continue;
-    }
-    const ref = `memories/${entry.name}`;
-    const path = join(kbPath, ref);
-    const [text, metadata] = await Promise.all([readFile(path, "utf8"), stat(path)]);
-    memories.push({
-      ref,
-      title: titleFromMemory(text) ?? titleFromSlug(entry.name.slice(0, -".md".length)),
-      slug: readBasicMemoryScalar(text, "permalink") ?? entry.name.slice(0, -".md".length),
-      supersededBy: readBasicMemoryScalar(text, "superseded_by"),
-      mtimeMs: metadata.mtimeMs,
-    });
-  }
-  return memories.sort((a, b) => a.ref.localeCompare(b.ref));
-}
-
-async function changedMemoriesSince(kbPath: string, lastReflectAt: string | null): Promise<MemoryInfo[]> {
+function changedMemoriesSince(documents: KbDocuments, lastReflectAt: string | null): CanonicalMemory[] {
   const cutoff = lastReflectAt === null ? -Infinity : Date.parse(lastReflectAt);
-  return (await listMemories(kbPath)).filter((memory) => memory.mtimeMs > cutoff);
+  return documents.memories.filter((memory) => memory.mtimeMs > cutoff);
 }
 
-function reflectPlaybook(changed: MemoryInfo[]): string {
+function reflectPlaybook(changed: CanonicalMemory[]): string {
   const lines = ["Reflect playbook", `Changed since last reflect: ${changed.length}`];
   if (changed.length > 0) {
     lines.push(...changed.map((memory) => `- ${memory.ref} | ${memory.title}`));
@@ -1378,12 +1345,10 @@ type DefragCandidates = {
   archivableSupersededRefs: string[];
 };
 
-async function defragCandidates(kbPath: string): Promise<DefragCandidates> {
-  const memories = await listMemories(kbPath);
+function defragCandidates(documents: KbDocuments): DefragCandidates {
+  const memories = documents.memories;
   const memoryRefs = new Set(memories.map((memory) => memory.ref));
-  const indexRefs = indexEntryLines(await readFile(join(kbPath, "index.md"), "utf8"))
-    .map((line) => parseIndexLine(line)?.ref)
-    .filter((ref): ref is string => ref !== undefined);
+  const indexRefs = documents.catalog.map((entry) => entry.ref);
   const indexRefSet = new Set(indexRefs);
   const bySlug = new Map<string, string[]>();
 
@@ -1404,7 +1369,10 @@ async function defragCandidates(kbPath: string): Promise<DefragCandidates> {
   };
 }
 
-function checkPlaybook(candidates: DefragCandidates, wiki: WikiLintIssues | null): string {
+function checkPlaybook(candidates: DefragCandidates, wiki: WikiLintIssues | null, formatIssues: string[]): string {
+  const formatSection = formatIssues.length === 0 ? "" : `Format errors:
+${renderCandidateLines(formatIssues)}
+`;
   const wikiSection = wiki === null ? "" : `Wiki structural candidates:
 Dangling [[links]]:
 ${renderCandidateLines(wiki.danglingLinks)}Missing cross-references:
@@ -1415,7 +1383,7 @@ ${renderCandidateLines(wiki.staleFlags)}
   return `Check playbook
 This command prints deterministic structural candidates and an agent review playbook only; it does not move, archive, delete, or prove semantic issues.
 Deterministic candidates:
-Duplicate slugs:
+${formatSection}Duplicate slugs:
 ${renderCandidateLines(candidates.duplicateSlugs.map((candidate) => `${candidate.slug}: ${candidate.refs.join(", ")}`))}
 Orphan memories not in index.md:
 ${renderCandidateLines(candidates.orphanMemories)}
@@ -1491,8 +1459,8 @@ type WikiLintIssues = {
   danglingIndexRefs: string[];
 };
 
-async function wikiLintIssues(kbPath: string): Promise<WikiLintIssues> {
-  const memories = await listMemories(kbPath);
+function wikiLintIssues(documents: KbDocuments): WikiLintIssues {
+  const memories = documents.memories;
   const memoryRefs = new Set(memories.map((memory) => memory.ref));
   const knownLinks = new Set<string>();
   for (const memory of memories) {
@@ -1503,17 +1471,14 @@ async function wikiLintIssues(kbPath: string): Promise<WikiLintIssues> {
     knownLinks.add(memory.slug);
   }
 
-  const indexRefs = indexEntryLines(await readFile(join(kbPath, "index.md"), "utf8"))
-    .map((line) => parseIndexLine(line)?.ref)
-    .filter((ref): ref is string => typeof ref === "string");
+  const indexRefs = documents.catalog.map((entry) => entry.ref);
   const indexRefSet = new Set(indexRefs);
   const danglingLinks: string[] = [];
   const missingCrossReferences: string[] = [];
   const staleFlags: string[] = [];
 
   for (const memory of memories) {
-    const text = await readFile(join(kbPath, memory.ref), "utf8");
-    const links = wikiLinks(text);
+    const links = memory.links;
     if (links.length === 0) {
       missingCrossReferences.push(`${memory.ref} has no [[links]]`);
     }
@@ -1523,7 +1488,7 @@ async function wikiLintIssues(kbPath: string): Promise<WikiLintIssues> {
       }
     }
     for (const key of ["review_after", "stale_after"]) {
-      const value = readBasicMemoryScalar(text, key);
+      const value = key === "review_after" ? memory.reviewAfter : memory.staleAfter;
       if (value !== null && isPastDate(value)) {
         staleFlags.push(`${memory.ref} ${key} ${value}`);
       }
@@ -1539,40 +1504,25 @@ async function wikiLintIssues(kbPath: string): Promise<WikiLintIssues> {
   };
 }
 
-function wikiLinks(text: string): string[] {
-  const links: string[] = [];
-  const pattern = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    links.push(match[1].trim());
-  }
-  return links;
-}
-
 function isPastDate(value: string): boolean {
   const date = Date.parse(value);
   return Number.isFinite(date) && date < Date.parse(todayIso());
 }
 
-async function resolveMemoryRef(kbPath: string, ref: string): Promise<string | null> {
-  const candidates = [
-    ref,
-    `${ref}.md`,
-    join("memories", ref),
-    join("memories", `${ref}.md`),
-    join("memories", `${slugify(ref)}.md`),
-  ].map((candidate) => resolve(kbPath, candidate));
-
-  for (const candidate of candidates) {
-    if (!candidate.startsWith(`${resolve(kbPath)}/`)) {
-      continue;
-    }
-    if (extname(candidate) === ".md" && (await exists(candidate))) {
-      return candidate;
-    }
-  }
-
-  return null;
+function resolveCanonicalMemory(kbPath: string, documents: KbDocuments, identity: string): CanonicalMemory[] {
+  return documents.memories.filter((memory) => {
+    const filename = memory.ref.replace(/^memories\//, "");
+    const fileStem = filename.replace(/\.md$/, "");
+    const aliases = new Set([
+      memory.ref,
+      filename,
+      fileStem,
+      memory.slug,
+      memory.title,
+      resolve(kbPath, memory.ref),
+    ]);
+    return aliases.has(identity);
+  });
 }
 
 function isUrl(value: string): boolean {

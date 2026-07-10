@@ -9,6 +9,8 @@ import {
   memoryFrontmatter,
   memoryTemplate,
   OBSERVATION_EXAMPLE,
+  parseBasicMemoryDocument,
+  parseCatalog,
   parseIndexLine,
   readBasicMemoryScalar,
   RELATION_EXAMPLE,
@@ -190,6 +192,105 @@ test("catalog entries render and parse exact natural titles", () => {
     category: "research",
     summary: "Natural punctuation survives.",
   });
+});
+
+test("the canonical Memory decoder returns one identity and normalized wiki references", () => {
+  const decoded = parseBasicMemoryDocument("memories/example-memory.md", `---
+title: "Example: Memory"
+type: note
+tags:
+  - research
+permalink: example-memory
+superseded_by: Next Memory
+review_after: 2026-07-09
+related_example: [[Frontmatter Ghost]]
+---
+
+- relates_to [[Target Memory]]
+
+See [[Natural Title]], [[memories/other.md|Other]], and [[example-memory]].
+`);
+
+  expect(decoded).toEqual({
+    ok: true,
+    value: {
+      ref: "memories/example-memory.md",
+      title: "Example: Memory",
+      slug: "example-memory",
+      supersededBy: "Next Memory",
+      reviewAfter: "2026-07-09",
+      staleAfter: null,
+      links: ["Natural Title", "memories/other.md", "example-memory"],
+    },
+  });
+});
+
+test("the canonical Memory decoder reports precise frontmatter failures", () => {
+  const decoded = parseBasicMemoryDocument("memories/broken.md", `---
+title: Broken
+type: page
+tags:
+  - research
+---
+`);
+
+  expect(decoded).toEqual({
+    ok: false,
+    issues: [
+      "memories/broken.md: frontmatter is missing permalink",
+      "memories/broken.md: frontmatter type must be note",
+    ],
+  });
+});
+
+test("the canonical Memory decoder rejects invalid structural dates", () => {
+  const decoded = parseBasicMemoryDocument("memories/broken-date.md", `---
+title: Broken Date
+type: note
+tags:
+  - research
+permalink: broken-date
+review_after: someday
+stale_after: 2026-02-30
+---
+`);
+
+  expect(decoded).toEqual({
+    ok: false,
+    issues: [
+      "memories/broken-date.md: frontmatter review_after must be an ISO calendar date",
+      "memories/broken-date.md: frontmatter stale_after must be an ISO calendar date",
+    ],
+  });
+});
+
+test("the canonical catalog decoder ignores only the documented placeholder and rejects ambiguity", () => {
+  const decoded = parseCatalog(`# KB Index
+
+Line format:
+${INDEX_LINE_FORMAT}
+- [[memories/example.md|Example]] | category: research | summary: First.
+- [[memories/example.md|Different]] | category: research | summary: Second.
+- [[memories/other.md|Example]] | category: research | summary: Same title.
+- [[memories/broken.md|Broken]] category: research
+  - [[memories/indented.md|Indented]] | category: research | summary: Not canonical.
+`);
+
+  expect(decoded.entries).toEqual([
+    {
+      ref: "memories/example.md",
+      title: "Example",
+      category: "research",
+      summary: "First.",
+      line: 5,
+    },
+  ]);
+  expect(decoded.issues).toEqual([
+    "index.md:6: ambiguous catalog ref memories/example.md (first declared on line 5)",
+    "index.md:7: ambiguous catalog title \"Example\" (first declared on line 5)",
+    "index.md:8: malformed catalog entry",
+    "index.md:9: malformed catalog entry",
+  ]);
 });
 
 test("ambiguous catalog titles fail validation", () => {

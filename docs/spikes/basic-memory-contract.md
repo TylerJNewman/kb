@@ -60,3 +60,30 @@ The Slice 0 fixture `test/fixtures/basic-memory-note.md` was copied to `memories
 - `bm tool read-note example-memory --project kb-contract-spike` preserved the frontmatter fields `title`, `type`, `tags`, and `permalink`.
 
 So the current note-format fixture round-trips through Basic Memory into the expected observation and relation records.
+
+## Canonical local interpretation
+
+The CLI decodes Memory identity and catalog structure once per command. Status,
+plain search, check (including wiki checks), and reflect consume that shared
+result instead of inventing fallback titles or slugs from filenames.
+
+- A Memory needs closed frontmatter with non-empty `title`, `type: note`, and
+  `permalink`. Structural dates (`review_after` and `stale_after`) use
+  `YYYY-MM-DD`. Invalid values are format errors; commands never substitute a
+  filename-derived identity.
+- The exact `INDEX_LINE_FORMAT` line in a scaffold is documentation and is
+  ignored. An indented, malformed, or duplicate catalog-shaped line is an
+  error. A catalog title that disagrees with its Memory is also an error.
+- Wiki links are decoded from Memory body content. Frontmatter, fenced examples,
+  and the untouched generated `- relates_to [[Target Memory]]` placeholder are
+  not structural links. Links by canonical title, `memories/<file>.md` ref
+  (with or without an alias), filename, or permalink resolve to the same
+  decoded Memory.
+- `kb status` reports format errors as unhealthy and `kb check` lists them with
+  file/line context. Enable, plain or Engine search, and reflect fail before
+  external work, logging, or mutation when local interpretation is malformed.
+  Engine search also rejects an unreadable result instead of returning the
+  remaining partial result set.
+- `kb read` resolves the same canonical title, permalink, filename, and full
+  `memories/<file>.md` ref. An ambiguous title or permalink requires the full
+  ref; malformed Memories never acquire a filename-derived fallback identity.
