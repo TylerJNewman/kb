@@ -572,7 +572,6 @@ async function startKb(args: string[]): Promise<number> {
   }
 
   const kbHome = join(homedir(), "kb");
-  const kbRoot = join(kbHome, "research");
   process.stdout.write(`First run
 
 KB Home: ${kbHome}
@@ -591,7 +590,7 @@ Prerequisite: Git must be on PATH because kb new initializes a git repository.
    kb add "$sample_dir/hello.txt" --in research
 
 3. Agent step: give the complete printed playbook to your AI agent.
-   Playbook paths such as raw/... and memories/... are relative to ${kbRoot}.
+   Playbook paths such as raw/... and memories/... are relative to the KB root that kb new prints.
    The agent writes the Memory and index line, runs the final kb add --complete command,
    and returns the Completed Add handoff receipt.
 
@@ -605,8 +604,8 @@ Coming back or retrying?
   If status lists unfinished Add work, recover its playbook with:
     kb add --resume <raw-ref> --in research
   Give the complete resumed playbook to the agent. "KB already exists" is a safe refusal.
-  If create failed with "git init failed", run: git -C ${kbRoot} init
-  Then rerun kb new research to register the repaired scaffold before checking status.
+  If create failed with "git init failed", run: git -C ~/kb/<your-name> init
+  Then rerun kb new <your-name> to register the repaired scaffold before checking status.
 
 Rules of thumb:
   kb start is optional and read-only; it only prints this text.

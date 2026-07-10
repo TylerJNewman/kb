@@ -151,12 +151,12 @@ test("kb start on an empty environment prints create-your-first guidance", async
   expect(result.stdout).toContain('kb add "$sample_dir/hello.txt" --in research');
   expect(result.stdout).toContain("Agent step: give the complete printed playbook to your AI agent.");
   expect(result.stdout).toContain("runs the final kb add --complete command");
-  expect(result.stdout).toContain(`relative to ${join(harness.home, "kb", "research")}`);
+  expect(result.stdout).toContain("relative to the KB root that kb new prints");
   expect(result.stdout).toContain('kb search "vector search" --in research');
   expect(result.stdout).toContain("kb status --in research");
   expect(result.stdout).toContain("kb add --resume <raw-ref> --in research");
-  expect(result.stdout).toContain(`git -C ${join(harness.home, "kb", "research")} init`);
-  expect(result.stdout).toContain("rerun kb new research to register the repaired scaffold");
+  expect(result.stdout).toContain("git -C ~/kb/<your-name> init");
+  expect(result.stdout).toContain("rerun kb new <your-name> to register the repaired scaffold");
 });
 
 test("kb add --help exposes stage, resume, and completion forms", async () => {
