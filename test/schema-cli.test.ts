@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
@@ -195,7 +194,17 @@ source_refs:
   - ${rawRef}
 ---
 
+## Summary
+
+Discussed launch timing.
+
+## Observations
+
 - [summary] Discussed launch timing. #work
+
+## Relations
+
+- relates_to [[Launch]]
 `);
   await appendFile(
     join(kbDir, "index.md"),
@@ -345,25 +354,21 @@ exit 2
   });
 });
 
-test("kb enable search chooses a deterministic private project name on a name collision", async () => {
+test("kb enable search fails closed on a project-name collision", async () => {
   const kbDir = await scaffoldResearchKb();
-  const suffix = createHash("sha256").update(kbDir).digest("hex").slice(0, 8);
-  const project = `research-${suffix}`;
   await harness.writeFakeExecutable("bm", `#!/bin/sh
 printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "list" ]; then echo '{"projects":[{"name":"research","local_path":"/other/research"}]}'; exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "add" ] && [ "$3" = "${project}" ]; then exit 0; fi
-if [ "$1" = "reindex" ] && [ "$3" = "${project}" ]; then exit 0; fi
 exit 2
 `);
 
   const result = await harness.runKb(["enable", "search", "--in", "research"]);
 
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain(`project: ${project}\n`);
-  expect(result.stdout).not.toContain(project);
+  expect(result.code).toBe(69);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("Basic Memory project conflict");
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("project: null\n");
 });
 
 async function scaffoldResearchKb(): Promise<string> {

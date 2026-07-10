@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import type {
   EngineConfigPatch,
@@ -94,22 +94,19 @@ export class BasicMemoryAdapter implements SchemaEngineAdapter {
     if (listed.ok === false) {
       return listed;
     }
-    const canonicalPath = resolve(kbPath);
-    const registeredPath = listed.value.find((project) => resolve(project.localPath) === canonicalPath);
-    let selectedName = registeredPath?.name ?? projectName;
-    const preferred = listed.value.find((project) => project.name === selectedName);
-    if (preferred !== undefined && resolve(preferred.localPath) !== canonicalPath) {
-      selectedName = `${projectName}-${createHash("sha256").update(canonicalPath).digest("hex").slice(0, 8)}`;
+    const canonicalPath = await canonicalProjectPath(kbPath);
+    const canonicalProjects = await Promise.all(listed.value.map(async (project) => ({
+      project,
+      path: await canonicalProjectPath(project.localPath),
+    })));
+    const named = canonicalProjects.find(({ project }) => project.name === projectName);
+    if (named !== undefined && named.path !== canonicalPath) {
+      return projectConflict(projectName, named.project.localPath, canonicalPath);
     }
-    const selected = listed.value.find((project) => project.name === selectedName);
-    if (selected !== undefined && resolve(selected.localPath) !== canonicalPath) {
-      return {
-        ok: false,
-        message: `Basic Memory project ${selectedName} is already registered to a different path.`,
-      };
-    }
+    const registeredPath = canonicalProjects.find(({ path }) => path === canonicalPath);
+    let selectedName = registeredPath?.project.name ?? projectName;
 
-    if (selected === undefined) {
+    if (registeredPath === undefined) {
       const added = await this.runWithRunner(
         runner.value,
         ["project", "add", selectedName, kbPath],
@@ -117,9 +114,19 @@ export class BasicMemoryAdapter implements SchemaEngineAdapter {
         ENGINE_OPERATIONS.projectAdd,
       );
       const addFailure = operationFailure(ENGINE_OPERATIONS.projectAdd, added, runner.value);
-      if (addFailure !== null) {
-        return addFailure;
+      const relisted = await this.listProjects(kbPath);
+      if (relisted.ok === false) {
+        return relisted;
       }
+      const winner = relisted.value.find((project) => project.name === projectName);
+      if (winner === undefined) {
+        return addFailure ?? { ok: false, message: "Basic Memory project add did not register the project." };
+      }
+      const winnerPath = await canonicalProjectPath(winner.localPath);
+      if (winnerPath !== canonicalPath) {
+        return projectConflict(projectName, winner.localPath, canonicalPath);
+      }
+      selectedName = winner.name;
     }
 
     const reindexed = await this.reindex(kbPath, selectedName);
@@ -141,6 +148,9 @@ export class BasicMemoryAdapter implements SchemaEngineAdapter {
     );
     if (run.ok === false) {
       return run;
+    }
+    if (run.value.stdout.trim() === "null") {
+      return malformedJsonFailure(ENGINE_OPERATIONS.projectList, "projects");
     }
     const parsed = parseEngineJson(run.value, ENGINE_OPERATIONS.projectList);
     if (parsed.ok === false) {
@@ -695,6 +705,21 @@ function parseProject(value: unknown): EngineProject | null {
     return null;
   }
   return { name: value.name, localPath: value.local_path };
+}
+
+async function canonicalProjectPath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function projectConflict(projectName: string, registeredPath: string, expectedPath: string): EngineResult<never> {
+  return {
+    ok: false,
+    message: `Basic Memory project conflict: project '${projectName}' points to ${registeredPath}, not ${expectedPath}.`,
+  };
 }
 
 function normalizeBasicMemoryResult(value: JsonRecord): EngineSearchResult | null {

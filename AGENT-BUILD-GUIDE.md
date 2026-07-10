@@ -12,7 +12,7 @@ A minimal, self-documenting CLI (`kb`) that an AI agent drives to scaffold and g
 - **Stack:** TypeScript on **Bun**. npm package `@tylerjnewman/kb`, binary `kb`. Install-once runnable after `npm i -g @tylerjnewman/kb`.
 - **Agent-first, non-interactive:** no wizards/TUI prompts ever. Every decision is a flag with a default. Education ships as printed `--help`/`--guide`/playbook text.
 - **Playbook boundary:** the CLI has NO LLM. Synthesis verbs (`add`, `reflect`, `check`, wiki add) do the deterministic half in code (stage files, update index/log, diff notes) then PRINT a playbook for the agent's meaning-making half. Never claim contradiction-detection or note quality as a code guarantee.
-- **Engine = Basic Memory, wrapped out-of-process, never forked, lazy-installed** via pinned Basic Memory 0.22.1 only when a B-arm needs it. Search uses `bm tool`; schema capabilities use upstream's top-level `bm schema infer|validate|diff --json --local` route. Both stay behind KB's normalized out-of-process adapter. The npm package carries no Python. Reference checkout: `/Users/tyler/code/mcp/basic-memory` (see its `NOTE-FORMAT.md`).
+- **Engine = Basic Memory, wrapped out-of-process, never forked, lazy-installed** at exact version 0.22.1 only when a B-arm needs it. Prefer an exact compatible ambient `bm`; otherwise use the pinned runner `uvx --from basic-memory==0.22.1 bm`. Search uses `bm tool`; schema capabilities use upstream's top-level `bm schema infer|validate|diff --json --local` route. Both stay behind KB's normalized out-of-process adapter. The npm package carries no Python. Reference checkout: `/Users/tyler/code/mcp/basic-memory` (see its `NOTE-FORMAT.md`).
 - **Arms (v1):** `wiki` (eager, engineless), `b0` (default, lazy, engineless), `b1` (b0 + engine). `--arm b2` is DEFERRED — reject it with a "deferred" message. Maintenance reminders = the Advisor (default-on), not a separate arm.
 
 ## Basic Memory command contract (from the Slice 0b spike — USE THESE, not guesses)
@@ -24,6 +24,7 @@ The spike (`docs/spikes/basic-memory-contract.md`, fixtures in `test/fixtures/ba
 - Schema: `bm schema infer|validate|diff ... --project <name> --json --local` — schema is the explicit top-level exception to the `bm tool` route, documented in ADR-0001's 2026-07-10 amendment.
 - Status: `bm status --project <name> --json` (can time out if no server running).
 - Fake `uvx`/`bm` stubs in tests must replay the fixtures under `test/fixtures/basic-memory-contract/`.
+- The exact Basic Memory package pin is a compatibility contract. Changing it requires deliberate fixture and JSON compatibility review.
 
 ## Note-format contract (must stay Basic Memory compatible)
 Memories are markdown with: frontmatter (`title`, `type`, `tags`, `permalink`); observations as `- [category] content #tag`; relations as `- relation_type [[Target]]`. This is a tested contract — B0 memories must be B1-importable with zero migration.
@@ -43,7 +44,7 @@ lastReflectAt: null
 
 ## Testing rules
 - Test only EXTERNAL behavior via the CLI boundary: spawn the packaged `kb` binary as a subprocess against an isolated temp `HOME`/`XDG_CONFIG_HOME`/cwd and a controlled `PATH`. Assert exit code, stdout/stderr, filesystem state. No internal-unit seams unless forced.
-- External tools (`git`, `uvx`, `bm`) are faked via stub executables on the controlled PATH, replaying fixtures.
+- External tools (`git`, `uvx`) are faked via stub executables on the controlled PATH, replaying fixtures. Basic Memory fakes model `uvx --from basic-memory==0.22.1 bm ...` dispatch and never create a persistent `bm`.
 - `bun test` must pass green before you commit.
 
 ## Your workflow

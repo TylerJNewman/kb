@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { INDEX_LINE_FORMAT, indexLine, memoryTemplate } from "../src/memory-format";
+import { basicMemoryUvxScript, homeResearchProjectListResponseShell, projectListJson, projectListResponseShell, projectListSequenceShell, recordingBasicMemoryUvxScript } from "./helpers/basic-memory-fake";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
-const packageVersion = (await Bun.file(resolve(import.meta.dir, "../package.json")).json() as { version: string }).version;
-
 let harness: KbHarness;
+
+const MULTI_PROCESS_TEST_TIMEOUT_MS = 20_000;
 
 beforeEach(async () => {
   harness = await createKbHarness();
@@ -16,6 +18,60 @@ beforeEach(async () => {
 afterEach(async () => {
   await harness.cleanup();
 });
+
+async function packageVersion(root = resolve(import.meta.dir, "..")): Promise<string> {
+  const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { version: string };
+  return metadata.version;
+}
+
+function isolatedKbEnv(root: string, path = join(root, "path")): Record<string, string> {
+  return {
+    HOME: join(root, "home"),
+    XDG_CONFIG_HOME: join(root, "xdg"),
+    PATH: path,
+  };
+}
+
+async function runCopiedRepoKb(root: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  return runProcess(process.execPath, [join(root, "bin/kb"), ...args], {
+    cwd: root,
+    env: isolatedKbEnv(root),
+  });
+}
+
+async function copyRunnableRepoCli(): Promise<string> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "kb-version-test-")));
+  await Promise.all([
+    cp(resolve(import.meta.dir, "../src"), join(root, "src"), { recursive: true }),
+    cp(resolve(import.meta.dir, "../bin"), join(root, "bin"), { recursive: true }),
+    cp(resolve(import.meta.dir, "../package.json"), join(root, "package.json")),
+    mkdir(join(root, "home")),
+    mkdir(join(root, "xdg")),
+    mkdir(join(root, "path")),
+  ]);
+  return root;
+}
+
+async function runProcess(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: Record<string, string> } = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn([command, ...args], {
+    cwd: options.cwd,
+    env: { ...process.env, ...options.env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+
+  return { code, stdout, stderr };
+}
 
 test("kb --help exits 0 and writes the golden help surface to stdout", async () => {
   const result = await harness.runKb(["--help"]);
@@ -46,10 +102,11 @@ test("kb --help exits 0 and writes the golden help surface to stdout", async () 
 
 test("kb --version exits 0 and writes only the version to stdout", async () => {
   const result = await harness.runKb(["--version"]);
+  const version = await packageVersion();
 
   expect(result).toEqual({
     code: 0,
-    stdout: `kb ${packageVersion}\n`,
+    stdout: `kb ${version}\n`,
     stderr: "",
   });
 });
@@ -57,10 +114,11 @@ test("kb --version exits 0 and writes only the version to stdout", async () => {
 test("kb -V is version and bare -v is not a public alias", async () => {
   const version = await harness.runKb(["-V"]);
   const verbose = await harness.runKb(["-v"]);
+  const expectedVersion = await packageVersion();
 
   expect(version).toEqual({
     code: 0,
-    stdout: `kb ${packageVersion}\n`,
+    stdout: `kb ${expectedVersion}\n`,
     stderr: "",
   });
   expect(verbose).toEqual({
@@ -72,12 +130,104 @@ test("kb -V is version and bare -v is not a public alias", async () => {
 
 test("global --kb flag is accepted before a command is routed", async () => {
   const result = await harness.runKb(["--kb", "research", "--version"]);
+  const version = await packageVersion();
 
   expect(result).toEqual({
     code: 0,
-    stdout: `kb ${packageVersion}\n`,
+    stdout: `kb ${version}\n`,
     stderr: "",
   });
+});
+
+test("kb --version follows a package-only version change", async () => {
+  const root = await copyRunnableRepoCli();
+  try {
+    const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as Record<string, unknown>;
+    metadata.version = "9.8.7";
+    await writeFile(join(root, "package.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+
+    const result = await runCopiedRepoKb(root, ["--version"]);
+
+    expect(result).toEqual({
+      code: 0,
+      stdout: "kb 9.8.7\n",
+      stderr: "",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("kb --version fails explicitly when package metadata is missing", async () => {
+  const root = await copyRunnableRepoCli();
+  try {
+    await rm(join(root, "package.json"));
+
+    const result = await runCopiedRepoKb(root, ["--version"]);
+
+    expect(result.code).toBe(69);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("kb: cannot read package metadata");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("packed npm artifact kb --version matches installed package metadata and repository output", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "kb-packed-version-test-")));
+  const packDir = join(root, "pack");
+  const installPrefix = join(root, "install");
+  const binDir = join(root, "bin");
+  const npmEnv = {
+    npm_config_cache: join(root, "npm-cache"),
+    npm_config_update_notifier: "false",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+  };
+
+  try {
+    await Promise.all([
+      mkdir(packDir),
+      mkdir(installPrefix),
+      mkdir(binDir),
+      mkdir(join(root, "home")),
+      mkdir(join(root, "xdg")),
+    ]);
+    await writeFile(join(binDir, "bun"), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 });
+
+    const pack = await runProcess("npm", ["pack", "--json", "--pack-destination", packDir], {
+      cwd: resolve(import.meta.dir, ".."),
+      env: npmEnv,
+    });
+    expect(pack.code, pack.stderr).toBe(0);
+
+    const [packed] = JSON.parse(pack.stdout) as Array<{ filename: string }>;
+    const tarball = join(packDir, packed.filename);
+    const install = await runProcess("npm", ["install", "--ignore-scripts", "--prefix", installPrefix, tarball], {
+      cwd: root,
+      env: npmEnv,
+    });
+    expect(install.code, install.stderr).toBe(0);
+
+    const installedMetadata = JSON.parse(
+      await readFile(join(installPrefix, "node_modules/@tylerjnewman/kb/package.json"), "utf8"),
+    ) as { version: string };
+    const packedKb = join(installPrefix, "node_modules/.bin/kb");
+    const packedVersion = await runProcess(packedKb, ["--version"], {
+      cwd: root,
+      env: isolatedKbEnv(root, binDir),
+    });
+    const repositoryVersion = await harness.runKb(["--version"]);
+
+    expect(packedVersion).toEqual({
+      code: 0,
+      stdout: `kb ${installedMetadata.version}\n`,
+      stderr: "",
+    });
+    expect(packedVersion.stdout).toBe(repositoryVersion.stdout);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("unknown command exits non-zero and writes stderr only", async () => {
@@ -112,32 +262,30 @@ test("kb new --help teaches what a KB is and where it lands", async () => {
   expect(result.stdout).toContain("Git: initialized silently unless the KB is already inside a git repo");
 });
 
-test("every public command has command-specific help", async () => {
-  const commands = [
-    ["start"],
-    ["new"],
-    ["init"],
-    ["list"],
-    ["add"],
-    ["draft"],
-    ["search"],
-    ["read"],
-    ["status"],
-    ["log"],
-    ["enable"],
-    ["reflect"],
-    ["check"],
-  ];
-
-  for (const command of commands) {
+for (const command of [
+  ["start"],
+  ["new"],
+  ["init"],
+  ["list"],
+  ["add"],
+  ["draft"],
+  ["search"],
+  ["read"],
+  ["status"],
+  ["log"],
+  ["enable"],
+  ["reflect"],
+  ["check"],
+]) {
+  test(`kb ${command.join(" ")} has command-specific help`, async () => {
     const result = await harness.runKb([...command, "--help"]);
     expect(result.code, command.join(" ")).toBe(0);
     expect(result.stderr, command.join(" ")).toBe("");
     expect(result.stdout, command.join(" ")).toContain(`kb ${command.join(" ")}`);
     expect(result.stdout, command.join(" ")).toContain("Usage:");
     expect(result.stdout, command.join(" ")).toContain("Rules of thumb:");
-  }
-});
+  });
+}
 
 
 test("kb start on an empty environment prints create-your-first guidance", async () => {
@@ -393,7 +541,7 @@ test("kb list shows all KBs and the default", async () => {
 `,
     stderr: "",
   });
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb start remains a stable read-only walkthrough when KBs exist", async () => {
   await scaffoldResearchKb();
@@ -500,7 +648,7 @@ Advisor:
 `,
     stderr: "",
   });
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("Registry rebuild-by-scan reconstructs KB Home entries when config is deleted", async () => {
   await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
@@ -1121,6 +1269,79 @@ permalink: example-memory
   expect(memory).toContain("- relates_to [[Target Memory]]");
 });
 
+test("kb draft round-trips natural Memory titles through the note frontmatter", async () => {
+  await scaffoldResearchKb();
+  const title = `: "Quoted" # Hash 研究 [draft]`;
+
+  const result = await harness.runKb(["draft", title, "--kb", "research"]);
+  const kbDir = join(harness.home, "kb", "research");
+  const memoryFiles = await readdir(join(kbDir, "memories"));
+
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toContain("Created memories/m-c0de2b2e61fa.md\n");
+  expect(result.stdout).toContain("kb draft --resume memories/m-c0de2b2e61fa.md --in research");
+  expect(memoryFiles).toEqual(["m-c0de2b2e61fa.md"]);
+  expect(await readFile(join(kbDir, "memories", "m-c0de2b2e61fa.md"), "utf8")).toContain(`---
+title: ": \\"Quoted\\" # Hash 研究 [draft]"
+type: note
+tags:
+  - research
+permalink: m-c0de2b2e61fa
+---`);
+});
+
+test("kb draft preserves YAML implicit scalar titles as strings", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+
+  for (const [title, file] of [
+    ["true", "true.md"],
+    ["null", "null.md"],
+    ["123", "123.md"],
+    ["2026-07-09", "2026-07-09.md"],
+  ] as const) {
+    const result = await harness.runKb(["draft", title, "--kb", "research"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(`Created memories/${file}\n`);
+    expect(await readFile(join(kbDir, "memories", file), "utf8")).toContain(`title: "${title}"`);
+  }
+});
+
+test("kb draft rejects ambiguous catalog titles before creating files", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+
+  for (const title of ["Pipe | Title", "Closing ]] Title", "Control\u0001Title"]) {
+    const result = await harness.runKb(["draft", title, "--kb", "research"]);
+
+    expect(result).toEqual({
+      code: 64,
+      stdout: "",
+      stderr: "kb: title contains characters that cannot be represented unambiguously in the catalog\n",
+    });
+    expect(await readdir(join(kbDir, "memories"))).toEqual([]);
+  }
+});
+
+test("kb draft creates deterministic collision-resistant slugs for non-ASCII and punctuation titles", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+
+  const unicode = await harness.runKb(["draft", "研究", "--kb", "research"]);
+  const punctuation = await harness.runKb(["draft", "!!!", "--kb", "research"]);
+
+  expect(unicode.code).toBe(0);
+  expect(unicode.stderr).toBe("");
+  expect(unicode.stdout).toContain("Created memories/m-4ff0f1dda80f.md\n");
+  expect(punctuation.code).toBe(0);
+  expect(punctuation.stderr).toBe("");
+  expect(punctuation.stdout).toContain("Created memories/m-e84c538e7fe2.md\n");
+  expect((await readdir(join(kbDir, "memories"))).sort()).toEqual(["m-4ff0f1dda80f.md", "m-e84c538e7fe2.md"]);
+});
+
 test("kb note remains a hidden alias for draft", async () => {
   await scaffoldResearchKb();
 
@@ -1144,7 +1365,7 @@ test("kb log appends and reads greppable append-only entries", async () => {
   expect(read.stderr).toBe("");
   expect(read.stdout).toContain("created | research");
   expect(read.stdout).toContain("question | How does this work?");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb read <ref> returns the memory and points at the tiered read order", async () => {
   await scaffoldResearchKb();
@@ -1157,7 +1378,7 @@ test("kb read <ref> returns the memory and points at the tiered read order", asy
   expect(result.stdout).toContain("Tiered read order: index.md -> executive summary -> derivatives in memories/ -> raw sources only when needed.");
   expect(result.stdout).toContain("title: Example Memory");
   expect(result.stdout).toContain("- [summary] TODO #research");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb search returns citation-ready refs and appends a query log entry", async () => {
   await scaffoldResearchKb();
@@ -1199,21 +1420,36 @@ Results: 1
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("query | retrieval");
 });
 
-test("kb search uses Basic Memory when the Engine is enabled and keeps the normalized output contract", async () => {
+test("kb read resolves the canonical title, permalink, filename, and full Memory ref", async () => {
+  await scaffoldResearchKb();
+  const title = `Example: \"Quoted\" 研究`;
+  const created = await harness.runKb(["draft", title, "--in", "research"]);
+  const ref = /^Created (memories\/.+\.md)$/m.exec(created.stdout)?.[1] ?? "";
+  const permalink = ref.replace(/^memories\//, "").replace(/\.md$/, "");
+  const filename = ref.replace(/^memories\//, "");
+
+  for (const identity of [title, permalink, filename, ref]) {
+    const result = await harness.runKb(["read", identity, "--in", "research"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(`title: "Example: \\"Quoted\\" 研究"`);
+  }
+});
+
+test("kb search uses the pinned Basic Memory runner when the Engine is enabled and keeps the normalized output contract", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
   await enableSearchInConfig(kbDir);
   await harness.writeFakeExecutable(
-    "bm",
-    `#!/bin/sh
-printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
+    "uvx",
+    recordingBasicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
 if [ "$1" = "tool" ] && [ "$2" = "search-notes" ]; then
   /bin/cat '${fixturePath("search-entity.json")}'
   exit 0
 fi
 exit 2
-`,
+`),
   );
 
   const result = await harness.runKb(["search", "durable observation", "--kb", "research"]);
@@ -1232,7 +1468,9 @@ Results: 1
     stderr: "",
   });
   expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(
-    "bm --version\nbm tool search-notes durable observation --project research\n",
+    "uvx --version\n"
+      + "uvx --from basic-memory==0.22.1 bm --version\n"
+      + "uvx --from basic-memory==0.22.1 bm tool search-notes durable observation --project research\n",
   );
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("query | durable observation");
 });
@@ -1259,18 +1497,22 @@ Line format:
 
   await enableSearchInConfig(kbDir);
   await harness.writeFakeExecutable(
-    "bm",
-    `#!/bin/sh
+    "uvx",
+    basicMemoryUvxScript(`
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
-/bin/cat '${fixturePath("search-entity.json")}'
-`,
+if [ "$1" = "tool" ] && [ "$2" = "search-notes" ]; then
+  /bin/cat '${fixturePath("search-entity.json")}'
+  exit 0
+fi
+exit 2
+`),
   );
   const engine = await harness.runKb(["search", "durable observation", "--kb", "research"]);
 
   expect(engineless.code).toBe(0);
   expect(engine.code).toBe(0);
   expect(searchShape(engine.stdout)).toEqual(searchShape(engineless.stdout));
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb search reports Engine failure explicitly and does not fall back silently", async () => {
   await scaffoldResearchKb();
@@ -1283,8 +1525,8 @@ Line format:
 - [[memories/alpha.md|Alpha Memory]] | category: research | summary: This would match fallback.
 `);
   await harness.writeFakeExecutable(
-    "bm",
-    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi\necho 'missing project' >&2\nexit 1\n",
+    "uvx",
+    basicMemoryUvxScript("if [ \"$1\" = \"--version\" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi\necho 'missing project' >&2\nexit 1"),
   );
 
   const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
@@ -1294,6 +1536,33 @@ Line format:
     stdout: "",
     stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search failed. missing project\n",
   });
+});
+
+test("kb search rejects malformed Engine entries instead of returning partial truth", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await enableSearchInConfig(kbDir);
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    basicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "tool" ] && [ "$2" = "search-notes" ]; then
+  echo '{"results":[{"title":"Valid","file_path":"memories/valid.md","matched_chunk":"needle"},{"title":"Broken"}]}'
+  exit 0
+fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["search", "needle", "--in", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search JSON contained a malformed result at index 1.\n",
+  });
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
 });
 
 test("kb status prints counts, health, and an empty Advisor slot for fixture state", async () => {
@@ -1337,6 +1606,107 @@ Advisor:
   expect(result.stdout).not.toContain("enable search");
 });
 
+test("status, plain search, check, and reflect share one decoded Memory identity", async () => {
+  await harness.writeFakeExecutable("git", "#!/bin/sh\n/bin/mkdir .git\n");
+  await harness.runKb(["new", "wiki-research", "--arm", "wiki"]);
+  const kbDir = join(harness.home, "kb", "wiki-research");
+  const title = `Example: \"Quoted\" 研究`;
+  await writeFile(join(kbDir, "memories", "example.md"), `---
+title: "Example: \\"Quoted\\" 研究"
+type: note
+tags:
+  - research
+permalink: canonical-example
+example_link: [[Frontmatter Ghost]]
+---
+
+- relates_to [[Target Memory]]
+
+Retrieval truth. See [[Natural Target]], [[memories/ref-target.md|Reference Alias]], and [[slug-target]].
+`);
+  await writeMemory(kbDir, "natural-target.md", "Natural Target", "natural-target", "", "See [[canonical-example]].\n");
+  await writeMemory(kbDir, "ref-target.md", "Reference Target", "ref-target", "", "See [[canonical-example]].\n");
+  await writeMemory(kbDir, "slug-target.md", "Slug Target", "slug-target", "", "See [[canonical-example]].\n");
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+${INDEX_LINE_FORMAT}
+${indexLine("memories/example.md", title, "research", "Retrieval truth.")}
+${indexLine("memories/natural-target.md", "Natural Target", "research", "Target.")}
+${indexLine("memories/ref-target.md", "Reference Target", "research", "Target.")}
+${indexLine("memories/slug-target.md", "Slug Target", "research", "Target.")}
+`);
+  const reflectedAt = new Date("2026-07-08T12:00:00.000Z");
+  await utimes(join(kbDir, "memories", "example.md"), reflectedAt, reflectedAt);
+
+  const status = await harness.runKb(["status", "--in", "wiki-research"]);
+  const search = await harness.runKb(["search", "retrieval", "--in", "wiki-research"]);
+  const check = await harness.runKb(["check", "--in", "wiki-research"]);
+  const reflect = await harness.run("kb", ["reflect", "--in", "wiki-research"], {
+    env: { KB_NOW: "2026-07-09T12:00:00.000Z" },
+  });
+
+  expect(status.stdout).toContain("Health: ok\n");
+  expect(search.stdout).toContain(`memories/example.md | ${title}\n`);
+  expect(check.stdout).toContain("Dangling [[links]]:\n- None\n");
+  expect(check.stdout).not.toContain("Frontmatter Ghost");
+  expect(check.stdout).not.toContain("Target Memory");
+  expect(check.stdout).toContain("Duplicate slugs:\n- None\n");
+  expect(reflect.stdout).toContain(`memories/example.md | ${title}\n`);
+});
+
+test("malformed Memory and catalog state is unhealthy, checkable, and blocks search and reflect", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "memories", "broken.md"), `---
+title: Broken
+type: note
+tags:
+  - research
+---
+
+This content would otherwise match needle.
+`);
+  await writeMemory(kbDir, "valid.md", "Canonical Title", "valid");
+  await writeFile(join(kbDir, "index.md"), `# KB Index
+
+Line format:
+${INDEX_LINE_FORMAT}
+- [[memories/broken.md|Broken]] category: research
+- [[memories/valid.md|Different Title]] | category: research | summary: Mismatch.
+`);
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  const beforeLog = await readFile(join(kbDir, "log.md"), "utf8");
+
+  const status = await harness.runKb(["status", "--in", "research"]);
+  const check = await harness.runKb(["check", "--in", "research"]);
+  const search = await harness.runKb(["search", "needle", "--in", "research"]);
+  const reflect = await harness.run("kb", ["reflect", "--in", "research"], {
+    env: { KB_NOW: "2026-07-09T12:00:00.000Z" },
+  });
+
+  expect(status.code).toBe(0);
+  expect(status.stdout).toContain("Health: unhealthy (3 document format errors; run `kb check`)\n");
+  expect(check.code).toBe(0);
+  expect(check.stdout).toContain(`Format errors:
+- memories/broken.md: frontmatter is missing permalink
+- index.md:5: malformed catalog entry
+- index.md:6: catalog title "Different Title" does not match memories/valid.md title "Canonical Title"
+`);
+  expect(search).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid KB documents: memories/broken.md: frontmatter is missing permalink; run `kb check`\n",
+  });
+  expect(reflect).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid KB documents: memories/broken.md: frontmatter is missing permalink; run `kb check`\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).toBe(beforeLog);
+});
+
 test("kb status Advisor suggests enable search at the index threshold only", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
@@ -1351,27 +1721,31 @@ test("kb status Advisor suggests enable search at the index threshold only", asy
   expect(after.code).toBe(0);
   expect(after.stderr).toBe("");
   expect(after.stdout).toContain("- Try `kb enable search`: 3 index entries make hybrid search more useful than plain file search.");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
-test("kb enable search lazy-installs Basic Memory, adds the project, reindexes, and flips to B1", async () => {
+test("kb enable search runs availability, project add, and reindex through one pinned Basic Memory runner", async () => {
   await scaffoldResearchKb();
   await harness.writeFakeExecutable(
     "uvx",
-    `#!/bin/sh
-printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "--version" ]; then
-  echo "uvx 0.0.0"
+    recordingBasicMemoryUvxScript(`
+  if [ "$1" = "--version" ]; then
+  echo "Basic Memory version: 0.22.1"
   exit 0
-fi
-if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
-  shift 3
-  if [ "$1" = "--version" ]; then echo "Basic Memory version: 0.22.1"; exit 0; fi
-  if [ "$1" = "project" ] && [ "$2" = "list" ]; then echo '{"projects":[]}'; exit 0; fi
-  if [ "$1" = "project" ] && [ "$2" = "add" ]; then echo "Project '$3' added successfully"; exit 0; fi
-  if [ "$1" = "reindex" ]; then echo "Reindex complete!"; exit 0; fi
-fi
-exit 2
-`,
+  fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: join(harness.home, "kb", "research") }]),
+])}
+  if [ "$1" = "project" ] && [ "$2" = "add" ]; then
+  echo "Project '$3' added successfully"
+  exit 0
+  fi
+  if [ "$1" = "reindex" ]; then
+  echo "Reindex complete!"
+  exit 0
+  fi
+  exit 2
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1391,8 +1765,26 @@ lastReflectAt: null
 uvx --from basic-memory==0.22.1 bm --version
 uvx --from basic-memory==0.22.1 bm project list --local --json
 uvx --from basic-memory==0.22.1 bm project add research ${kbDir}
+uvx --from basic-memory==0.22.1 bm project list --local --json
 uvx --from basic-memory==0.22.1 bm reindex --project research --search
 `);
+});
+
+test("kb enable search validates canonical documents before external Engine work", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "memories", "broken.md"), "# Missing Basic Memory frontmatter\n");
+  await harness.writeFakeExecutable("uvx", recordingBasicMemoryUvxScript("exit 0"));
+
+  const result = await harness.runKb(["enable", "search", "--in", "research"]);
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid KB documents: memories/broken.md: missing Basic Memory frontmatter; run `kb check`\n",
+  });
+  expect(await readdir(harness.home)).not.toContain("engine-calls");
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
 });
 
 test("populated B0 enables B1 search with zero content migration", async () => {
@@ -1435,11 +1827,15 @@ ${indexLine("memories/gamma-memory.md", "Gamma Memory", "research", "sharedterm 
   const beforeHashes = await contentHashes(kbDir);
 
   await harness.writeFakeExecutable(
-    "bm",
-    `#!/bin/sh
-printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "list" ]; then echo '{"projects":[]}'; exit 0; fi
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then
+  exit 0
+fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: kbDir }]),
+])}
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then
   echo "Project '$3' added successfully"
   exit 0
@@ -1459,9 +1855,8 @@ JSON
   exit 0
 fi
 exit 2
-`,
+`),
   );
-  await harness.writeFakeExecutable("uvx", "#!/bin/sh\necho 'uvx should not be needed when bm exists' >&2\nexit 2\n");
 
   const enabled = await harness.runKb(["enable", "search", "--kb", "research"]);
   expect(enabled).toEqual({ code: 0, stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n", stderr: "" });
@@ -1475,8 +1870,10 @@ exit 2
   const afterSearch = await harness.runKb(["search", "sharedterm", "--kb", "research"]);
   expect(afterSearch.code).toBe(0);
   expect(searchRefs(afterSearch.stdout)).toEqual(beforeRefs);
-  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toContain("bm tool search-notes sharedterm --project research\n");
-});
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toContain(
+    "uvx --from basic-memory==0.22.1 bm tool search-notes sharedterm --project research\n",
+  );
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb enable search is idempotent once already enabled", async () => {
   await scaffoldResearchKb();
@@ -1496,9 +1893,119 @@ lastReflectAt: null
   expect(result).toEqual({ code: 0, stdout: "Search already enabled for research.\n", stderr: "" });
 });
 
+test("commands reject malformed KB configuration before doing work", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const before = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await writeFile(join(kbDir, "kb.yaml"), before.replace("schemaVersion: 1", "schemaVersion: 2"));
+
+  const result = await harness.runKb(["status", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid kb.yaml: unsupported schemaVersion: 2\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(before.replace("schemaVersion: 1", "schemaVersion: 2"));
+});
+
+test("configuration validation rejects representative unsupported required-value shapes without mutation", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const valid = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  const cases = [
+    {
+      content: valid.replace("formatVersion: basic-memory-note-v1", "formatVersion: future-v2"),
+      error: "unsupported formatVersion: future-v2",
+    },
+    {
+      content: valid.replace("formatVersion: basic-memory-note-v1\n", ""),
+      error: "missing formatVersion",
+    },
+    {
+      content: valid.replace("arm: b0", "arm: b0\narm: b0"),
+      error: "duplicate arm",
+    },
+    {
+      content: valid.replace("arm: b0", "arm: mystery"),
+      error: "unknown arm: mystery",
+    },
+    {
+      content: valid.replace("state: disabled", "state: mystery"),
+      error: "unknown Engine state: mystery",
+    },
+    {
+      content: valid.replace("  basicMemory:", "  unrelated:"),
+      error: "missing basicMemory",
+    },
+  ];
+
+  for (const scenario of cases) {
+    await writeFile(join(kbDir, "kb.yaml"), scenario.content);
+    const result = await harness.runKb(["status", "--kb", "research"]);
+    expect(result).toEqual({
+      code: 64,
+      stdout: "",
+      stderr: `kb: invalid kb.yaml: ${scenario.error}\n`,
+    });
+    expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(scenario.content);
+  }
+});
+
+test("contradictory Engine state is rejected instead of defaulting to unknown", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "kb.yaml"), `schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b1
+engine:
+  basicMemory:
+    state: disabled
+    project: null
+lastReflectAt: null
+`);
+
+  const result = await harness.runKb(["search", "anything", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid kb.yaml: unsupported state combination: arm b1 requires enabled Engine with a project\n",
+  });
+});
+
+test("invalid reflect timestamps fail before mutation", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const malformed = `schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b0
+engine:
+  basicMemory:
+    state: disabled
+    project: null
+lastReflectAt: someday
+`;
+  await writeFile(join(kbDir, "kb.yaml"), malformed);
+
+  const result = await harness.run("kb", ["reflect", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+  });
+
+  expect(result).toEqual({
+    code: 64,
+    stdout: "",
+    stderr: "kb: invalid kb.yaml: invalid lastReflectAt: someday\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(malformed);
+  expect(await readFile(join(kbDir, "log.md"), "utf8")).not.toContain("reflect");
+});
+
 test("kb enable search fails clearly without uvx and leaves the KB in B0", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "raw", "existing.md"), "# Existing content\n");
+  const beforeHashes = await contentHashes(kbDir);
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
 
@@ -1516,12 +2023,15 @@ engine:
     project: null
 lastReflectAt: null
 `);
+  expect(await contentHashes(kbDir)).toEqual(beforeHashes);
   expect((await harness.runKb(["status", "--kb", "research"])).stdout).toContain("Arm: b0 (plain markdown)\nSearch: plain files");
 });
 
 test("kb enable search reports install-check failure and leaves the KB in B0", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, "raw", "existing.md"), "# Existing content\n");
+  const beforeHashes = await contentHashes(kbDir);
   await harness.writeFakeExecutable(
     "uvx",
     "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'uvx 0.0.0'; exit 0; fi\necho 'Basic Memory install failed' >&2\nexit 2\n",
@@ -1536,14 +2046,21 @@ test("kb enable search reports install-check failure and leaves the KB in B0", a
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+  expect(await contentHashes(kbDir)).toEqual(beforeHashes);
 });
 
 test("kb enable search reports reindex failure and leaves the KB in B0", async () => {
   await scaffoldResearchKb();
   const kbDir = join(harness.home, "kb", "research");
   await harness.writeFakeExecutable(
-    "bm",
-    "#!/bin/sh\nprintf 'bm %s\\n' \"$*\" >> \"$HOME/engine-calls\"\nif [ \"$1\" = \"--version\" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"list\" ]; then echo '{\"projects\":[]}'; exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"add\" ]; then exit 0; fi\necho 'reindex failed' >&2\nexit 1\n",
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListResponseShell(projectListJson([{ name: "research", localPath: kbDir }]))}
+if [ "$1" = "project" ]; then exit 0; fi
+echo 'reindex failed' >&2
+exit 1
+`),
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1555,6 +2072,338 @@ test("kb enable search reports reindex failure and leaves the KB in B0", async (
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b0\n");
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("state: disabled\n");
+});
+
+test("kb enable search resumes when the Basic Memory project already points at the same KB", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListResponseShell(projectListJson([{ name: "research", localPath: kbDir }]))}
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then
+  echo "unexpected project add" >&2
+  exit 9
+fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({ code: 0, stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n", stderr: "" });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b1\n");
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --local --json
+uvx --from basic-memory==0.22.1 bm reindex --project research --search
+`);
+});
+
+test("kb enable search rejects a same-name Basic Memory project at another path", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListResponseShell(projectListJson([{ name: "research", localPath: "/tmp/other-research" }]))}
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
+if [ "$1" = "reindex" ]; then exit 9; fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: `kb: cannot enable search: Basic Memory project conflict: project 'research' points to /tmp/other-research, not ${kbDir}.\n`,
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --local --json
+`);
+});
+
+test("kb enable search treats lexical aliases for the same KB path as the same project", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const aliasRoot = join(harness.root, "aliases");
+  await mkdir(aliasRoot);
+  const aliasPath = join(aliasRoot, "research-link");
+  await symlink(kbDir, aliasPath);
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListResponseShell(projectListJson([{ name: "research", localPath: aliasPath }]))}
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result.code).toBe(0);
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).not.toContain("project add");
+});
+
+test("kb enable search fails closed when Basic Memory project state is malformed", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ] && [ "$3" = "--local" ] && [ "$4" = "--json" ]; then
+  echo 'not json'
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
+if [ "$1" = "reindex" ]; then exit 9; fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: Basic Memory project list returned non-JSON output.\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+});
+
+test("kb enable search fails closed when Basic Memory project state is JSON null", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListResponseShell("null")}
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 9; fi
+if [ "$1" = "reindex" ]; then exit 9; fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: Basic Memory project list JSON did not include valid projects.\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+});
+
+test("kb enable search retries registration followed by reindex failure without re-registering", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: kbDir }]),
+])}
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 0; fi
+if [ "$1" = "reindex" ]; then
+  if [ ! -f "$HOME/reindex-failed-once" ]; then
+    : > "$HOME/reindex-failed-once"
+    echo "reindex failed" >&2
+    exit 1
+  fi
+  exit 0
+fi
+exit 2
+`),
+  );
+
+  const first = await harness.runKb(["enable", "search", "--kb", "research"]);
+  expect(first).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: Basic Memory reindex failed. reindex failed\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+
+  const retry = await harness.runKb(["enable", "search", "--kb", "research"]);
+  expect(retry).toEqual({
+    code: 0,
+    stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n",
+    stderr: "",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toContain("arm: b1\n");
+  const calls = await readFile(join(harness.home, "engine-calls"), "utf8");
+  expect(calls.match(/ bm project add research /g)).toHaveLength(1);
+  expect(calls.match(/ bm reindex --project research --search/g)).toHaveLength(2);
+});
+
+test("kb enable search recovers from a registration race by accepting a same-path winner", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: kbDir }]),
+])}
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then
+  echo "Project already exists" >&2
+  exit 1
+fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({ code: 0, stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n", stderr: "" });
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --local --json
+uvx --from basic-memory==0.22.1 bm project add research ${kbDir}
+uvx --from basic-memory==0.22.1 bm project list --local --json
+uvx --from basic-memory==0.22.1 bm reindex --project research --search
+`);
+});
+
+test("kb enable search verifies project identity after registration before reindexing", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeConfig = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  await harness.writeFakeExecutable(
+    "uvx",
+    recordingBasicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${projectListSequenceShell([
+  projectListJson([]),
+  projectListJson([{ name: "research", localPath: "/tmp/other-research" }]),
+])}
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then exit 0; fi
+if [ "$1" = "reindex" ]; then exit 9; fi
+exit 2
+`),
+  );
+
+  const result = await harness.runKb(["enable", "search", "--kb", "research"]);
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: `kb: cannot enable search: Basic Memory project conflict: project 'research' points to /tmp/other-research, not ${kbDir}.\n`,
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(beforeConfig);
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --local --json
+uvx --from basic-memory==0.22.1 bm project add research ${kbDir}
+uvx --from basic-memory==0.22.1 bm project list --local --json
+`);
+});
+
+test("configuration replacement failure leaves prior config parseable and removes temp files", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  await writeEngineStubs();
+  const before = await readFile(join(kbDir, "kb.yaml"), "utf8");
+
+  const result = await harness.run("kb", ["enable", "search", "--kb", "research"], {
+    env: { KB_FAIL_CONFIG_COMMIT: "before-rename" },
+  });
+
+  expect(result).toEqual({
+    code: 69,
+    stdout: "",
+    stderr: "kb: cannot enable search: config commit failed before atomic replacement\n",
+  });
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(before);
+  expect((await readdir(kbDir)).filter((entry) => entry.startsWith(".kb.yaml."))).toEqual([]);
+  expect((await harness.runKb(["status", "--kb", "research"])).code).toBe(0);
+});
+
+test("injected configuration write and lock failures preserve config and remove owned artifacts", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const before = await readFile(join(kbDir, "kb.yaml"), "utf8");
+  const cases: Array<{ env: Record<string, string>; error: string }> = [
+    { env: { KB_FAIL_CONFIG_COMMIT: "before-write" }, error: "config commit failed before temporary write" },
+    { env: { KB_FAIL_CONFIG_LOCK: "1" }, error: "config lock acquisition failed" },
+    { env: { KB_FAIL_CONFIG_LOCK: "after-mkdir" }, error: "config lock owner write failed: injected owner write failure" },
+  ];
+
+  for (const scenario of cases) {
+    const result = await harness.run("kb", ["reflect", "--kb", "research"], {
+      env: { ...scenario.env, KB_NOW: "2026-07-07T12:00:00.000Z" },
+    });
+    expect(result).toEqual({ code: 69, stdout: "", stderr: `kb: ${scenario.error}\n` });
+    expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(before);
+    expect((await readdir(kbDir)).filter((entry) => entry.startsWith(".kb.yaml."))).toEqual([]);
+  }
+});
+
+test("configuration lock recovery never steals a live lock and does recover a dead owner", async () => {
+  await scaffoldResearchKb();
+  const kbDir = join(harness.home, "kb", "research");
+  const lockDir = join(kbDir, ".kb.yaml.lock");
+  await mkdir(lockDir);
+  await writeFile(join(lockDir, "owner"), JSON.stringify({ pid: process.pid, createdAt: 0 }));
+
+  const blocked = await harness.run("kb", ["reflect", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+  });
+  expect(blocked).toEqual({ code: 69, stdout: "", stderr: "kb: config lock acquisition timed out\n" });
+  expect(await stat(lockDir)).toBeDefined();
+
+  await writeFile(join(lockDir, "owner"), JSON.stringify({ pid: 2_147_483_647, createdAt: 0 }));
+  const recovered = await harness.run("kb", ["reflect", "--kb", "research"], {
+    env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+  });
+  expect(recovered.code).toBe(0);
+  expect((await readdir(kbDir)).filter((entry) => entry.startsWith(".kb.yaml."))).toEqual([]);
+});
+
+test("concurrent reflect metadata and Engine transition preserve both updates", async () => {
+  await scaffoldResearchKb();
+  await writeMemory(join(harness.home, "kb", "research"), "concurrent.md", "Concurrent Memory", "concurrent");
+  await writeSlowEngineStubs();
+  const kbDir = join(harness.home, "kb", "research");
+
+  const [enabled, reflected] = await Promise.all([
+    harness.runKb(["enable", "search", "--kb", "research"]),
+    harness.run("kb", ["reflect", "--kb", "research"], {
+      env: { KB_NOW: "2026-07-07T12:00:00.000Z" },
+    }),
+  ]);
+
+  expect(enabled.code).toBe(0);
+  expect(reflected.code).toBe(0);
+  expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(`schemaVersion: 1
+formatVersion: basic-memory-note-v1
+arm: b1
+engine:
+  basicMemory:
+    state: enabled
+    project: research
+lastReflectAt: 2026-07-07T12:00:00.000Z
+`);
 });
 
 test("engineless loop new add draft search read status works with no Engine installed", async () => {
@@ -1600,7 +2449,7 @@ Line format:
   expect(status.code).toBe(0);
   expect(status.stdout).toContain("Search: plain files");
   expect(status.stdout).toContain("Advisor:\n- No suggestions.");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("daily commands do not mutate existing raw contents", async () => {
   await scaffoldResearchKb();
@@ -1615,7 +2464,7 @@ test("daily commands do not mutate existing raw contents", async () => {
   await harness.runKb(["read", "other", "--kb", "research"]);
 
   expect(await readFile(rawPath, "utf8")).toBe("original raw bytes\n");
-});
+}, MULTI_PROCESS_TEST_TIMEOUT_MS);
 
 test("kb reflect reports memories changed since last reflect, writes marker, logs, and prints playbook", async () => {
   await scaffoldResearchKb();
@@ -1845,6 +2694,30 @@ engine:
     project: research
 lastReflectAt: null
 `);
+}
+
+async function writeEngineStubs(): Promise<void> {
+  await harness.writeFakeExecutable(
+    "uvx",
+    basicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${homeResearchProjectListResponseShell()}
+if [ "$1" = "project" ]; then exit 0; fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+`),
+  );
+}
+
+async function writeSlowEngineStubs(): Promise<void> {
+  await harness.writeFakeExecutable(
+    "uvx",
+    basicMemoryUvxScript(`
+if [ "$1" = "--version" ]; then exit 0; fi
+${homeResearchProjectListResponseShell("  /bin/sleep 0.2")}
+if [ "$1" = "project" ]; then /bin/sleep 0.2; exit 0; fi
+if [ "$1" = "reindex" ]; then /bin/sleep 0.2; exit 0; fi
+`),
+  );
 }
 
 function fixturePath(name: string): string {

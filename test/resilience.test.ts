@@ -186,7 +186,7 @@ test("Reflect keeps its worklist pending until explicit completion", async () =>
   const topicPath = join(kbDir, "memories", "topic.md");
   await writeFile(
     topicPath,
-    "---\ntitle: Topic\npermalink: topic\n---\n\nChanged fact.\n",
+    "---\ntitle: Topic\ntype: note\ntags:\n  - research\npermalink: topic\n---\n\n## Summary\n\nChanged fact.\n",
   );
   const topicChangedAt = new Date("2026-07-10T11:00:00.000Z");
   await utimes(topicPath, topicChangedAt, topicChangedAt);
@@ -305,9 +305,10 @@ lastReflectAt: null
   const status = await harness.runKb(["status", "--in", "research"]);
   const add = await harness.runKb(["add", source, "--in", "research"]);
 
-  expect(status.code).toBe(65);
-  expect(status.stdout).toContain("Health: invalid kb.yaml");
-  expect(add.code).toBe(65);
+  expect(status.code).toBe(64);
+  expect(status.stdout).toBe("");
+  expect(status.stderr).toContain("kb: invalid kb.yaml:");
+  expect(add.code).toBe(64);
   expect(await readdir(join(kbDir, "raw"))).toEqual([]);
 });
 
@@ -315,8 +316,11 @@ test("concurrent enable search callers execute one Engine transaction", async ()
   await createResearchKb();
   await harness.writeFakeExecutable("bm", `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "list" ]; then echo '{"projects":[]}'; exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "add" ]; then echo project-add >> "$HOME/engine-calls"; /bin/sleep 0.1; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then
+  if [ -f "$HOME/project-added" ]; then printf '{"projects":[{"name":"research","local_path":"%s/kb/research"}]}\n' "$HOME"; else echo '{"projects":[]}'; fi
+  exit 0
+fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then echo project-add >> "$HOME/engine-calls"; : > "$HOME/project-added"; /bin/sleep 0.1; exit 0; fi
 if [ "$1" = "reindex" ]; then echo reindex >> "$HOME/engine-calls"; /bin/sleep 0.1; exit 0; fi
 exit 1
 `);

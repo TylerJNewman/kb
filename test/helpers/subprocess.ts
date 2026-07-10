@@ -15,7 +15,7 @@ export type KbHarness = {
   cwd: string;
   pathDir: string;
   runKb: (args: string[]) => Promise<KbRun>;
-  run: (cmd: string, args: string[], options?: { cwd?: string; env?: Record<string, string> }) => Promise<KbRun>;
+  run: (cmd: string, args: string[], options?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }) => Promise<KbRun>;
   writeFakeExecutable: (name: string, body: string) => Promise<string>;
   listCwd: () => Promise<string[]>;
   cleanup: () => Promise<void>;
@@ -53,19 +53,32 @@ export async function createKbHarness(): Promise<KbHarness> {
     "#!/bin/sh\nexec \"$BUN_BIN\" \"$KB_BIN\" \"$@\"\n",
   );
 
-  const run = async (cmd: string, args: string[], options?: { cwd?: string; env?: Record<string, string> }): Promise<KbRun> => {
+  const run = async (cmd: string, args: string[], options?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<KbRun> => {
     const proc = Bun.spawn([cmd, ...args], {
       cwd: options?.cwd ?? cwd,
       env: { ...env, ...options?.env },
       stdout: "pipe",
       stderr: "pipe",
     });
+    const timeoutMs = options?.timeoutMs;
+    let timedOut = false;
+    const timeout = timeoutMs === undefined ? null : setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGTERM");
+      setTimeout(() => proc.kill("SIGKILL"), 100).unref?.();
+    }, timeoutMs);
 
     const [stdout, stderr, code] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
+    if (timeout !== null) {
+      clearTimeout(timeout);
+    }
+    if (timedOut) {
+      return { code: 124, stdout, stderr: `${stderr}test harness: command timed out after ${timeoutMs}ms\n` };
+    }
 
     return { code, stdout, stderr };
   };

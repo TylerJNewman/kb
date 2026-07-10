@@ -85,7 +85,7 @@ A single CLI, `kb`, that an AI agent drives on the user's behalf. One command sc
 
 **Overall shape.** A TypeScript CLI running on Bun, published to npm as `@tylerjnewman/kb` with binary `kb`, installed once with `npm i -g @tylerjnewman/kb` (ADR-0004). No interactive prompts; every decision is a flag with a default; education ships as printed `--help`/`--guide`/playbook text (ADR-0002).
 
-**Engine relationship.** Basic Memory is wrapped as a separate, out-of-process engine, never forked, installed lazily via `uvx basic-memory` only when a B-Arm needs it. The CLI talks to it via `bm tool <cmd> --json` (and, later, its MCP server). The npm package carries no Python (ADR-0001).
+**Engine relationship.** Basic Memory is wrapped as a separate, out-of-process engine, never forked, run lazily via `uvx --from basic-memory==0.22.1 bm` only when a B-Arm needs it. Availability, project lifecycle, reindexing, and search all use that same pinned runner. The npm package carries no Python (ADR-0001).
 
 **Arms and default.** Recognized Arms share one on-disk substrate; they differ only in *add/query behavior*, not folder layout:
 - **A (wiki)** — eager playbook: add asks the agent to write the memory, update related pages, and review possible contradictions; `kb check` adds wiki-link and stale-date checks; engineless.
@@ -104,7 +104,7 @@ The default Arm for `kb new` is **B0**. Scaffold Arms are **wiki** and **b0** on
 
 **Advisor.** Read-only. `kb status` (and cheaply, other commands) evaluates a small set of threshold rules (e.g. corpus size / index length → suggest `kb enable search`; days-since-reflect → suggest `kb reflect`) and prints suggestions with a one-line reason. Never mutates, never auto-upgrades.
 
-**`kb enable search`.** The one real integration in v1: detect/lazy-install Basic Memory (`uvx`), `bm project add` the KB path, run initial sync, flip `kb.yaml` engine state so `kb search` routes to hybrid search. This deliberately proves the ADR-0001 wrapping bet early.
+**`kb enable search`.** The one real integration in v1: detect/lazy-run Basic Memory through the pinned `uvx --from basic-memory==0.22.1 bm` runner, add the project, reindex, flip `kb.yaml` engine state so `kb search` routes to hybrid search. This deliberately proves the ADR-0001 wrapping bet early.
 
 **Command surface (v1).** `new`, `init`, `list`, `status`, `add`, `draft`, `search`, `read`, `log`, `enable search`, `reflect`, `check`, plus `--help`/`--guide` and target flag `--in <name>`.
 

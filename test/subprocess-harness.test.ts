@@ -26,3 +26,15 @@ test("harness runs kb with isolated HOME, XDG_CONFIG_HOME, cwd, and controlled P
   const fakeGit = await harness.run("git", []);
   expect(fakeGit).toEqual({ code: 0, stdout: "fake-git\n", stderr: "" });
 });
+
+test("harness bounds individual subprocesses without a global test timeout", async () => {
+  await harness.writeFakeExecutable("slow", "#!/bin/sh\n/bin/sleep 5\n");
+
+  const result = await harness.run("slow", [], { timeoutMs: 100 });
+
+  expect(result).toEqual({
+    code: 124,
+    stdout: "",
+    stderr: "test harness: command timed out after 100ms\n",
+  });
+});

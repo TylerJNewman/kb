@@ -17,7 +17,7 @@ async function text(path: string): Promise<string> {
 
 test("beginner install guidance includes the runtime and Git required by kb", async () => {
   expect((await text("bin/kb")).startsWith("#!/usr/bin/env bun\n")).toBe(true);
-  expect(JSON.parse(await text("package.json")).engines.bun).toBe(">=1.1.0");
+  expect(JSON.parse(await text("package.json")).engines.bun).toBe("1.3.10");
 
   for (const path of beginnerSurfaces) {
     const content = await text(path);

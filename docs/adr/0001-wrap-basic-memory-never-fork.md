@@ -1,6 +1,6 @@
 # Wrap Basic Memory as an out-of-process engine; never fork; lazy-install
 
-Our CLI needs Basic Memory's substrate (markdown notes, SQLite index, hybrid search, schema tooling) for its B arms, but Basic Memory is AGPL-3.0 with a CLA, written in Python with a heavy native dependency tree (onnxruntime, SQLAlchemy, Alembic), while our CLI is TypeScript/Bun. We decided to wrap upstream Basic Memory as a separate process — installed lazily (`uvx basic-memory`) only when a user picks a B arm — talking to it via `bm tool <cmd> --json` (and later its MCP server). We never fork.
+Our CLI needs Basic Memory's substrate (markdown notes, SQLite index, hybrid search, schema tooling) for its B arms, but Basic Memory is AGPL-3.0 with a CLA, written in Python with a heavy native dependency tree (onnxruntime, SQLAlchemy, Alembic), while our CLI is TypeScript/Bun. We decided to wrap upstream Basic Memory as a separate process, run lazily through one pinned executable strategy (`uvx --from basic-memory==0.22.1 bm ...`) only when a user picks a B arm. Availability checks, project lifecycle, reindexing, and search all use that same runner. We never fork and we do not require or create a persistent bare `bm` executable.
 
 ## Considered Options
 
@@ -22,3 +22,5 @@ KB may invoke that documented upstream route through the same pinned, out-of-pro
 Engine adapter. The architectural boundary is unchanged: KB normalizes the JSON and
 does not expose Basic Memory's raw command surface as its product interface. Search
 continues to use `bm tool search-notes`.
+
+- The exact Basic Memory package pin is a compatibility contract. Changing it requires deliberate fixture and JSON compatibility review.

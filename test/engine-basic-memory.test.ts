@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { BasicMemoryAdapter } from "../src/engine/basic-memory";
+import { BasicMemoryAdapter, buildBasicMemoryCommand } from "../src/engine/basic-memory";
 
 // Forced seam: the implementation spec defines the Engine subprocess boundary separately
 // from the public CLI. These tests observe runner selection, process-tree timeout, and signal
@@ -16,6 +16,20 @@ let binDir = "";
 let kbDir = "";
 let originalPath: string | undefined;
 let originalTimeout: string | undefined;
+
+test("Basic Memory fallback command construction stays pinned", () => {
+  expect(buildBasicMemoryCommand(["tool", "search-notes", "durable observation", "--project", "research"])).toEqual([
+    "uvx",
+    "--from",
+    "basic-memory==0.22.1",
+    "bm",
+    "tool",
+    "search-notes",
+    "durable observation",
+    "--project",
+    "research",
+  ]);
+});
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "kb-engine-test-"));

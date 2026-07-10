@@ -16,8 +16,9 @@
   },
   "homepage": "https://github.com/TylerJNewman/kb#readme",
   "type": "module",
+  "packageManager": "bun@1.3.10",
   "engines": {
-    "bun": ">=1.1.0"
+    "bun": "1.3.10"
   },
   "files": [
     "bin/",
@@ -29,9 +30,12 @@
     "kb": "bin/kb"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "bun run tsc --noEmit --project tsconfig.json",
+    "verify": "bun run typecheck && bun test"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "1.3.14",
+    "typescript": "5.9.3"
   }
 }

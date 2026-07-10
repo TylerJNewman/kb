@@ -284,9 +284,9 @@ kb add --complete add-a1b2c3d4e5f60718293a4b5c \
       <p><strong>Why:</strong> using the real upstream interface is safer than inventing a nonexistent tool command. The process, pinning, normalization, and no-fork boundaries are unchanged.</p>
     </div>
     <div class="card deviation">
-      <h3>Project-name collisions receive a deterministic private suffix</h3>
-      <p>When an Engine project already uses the requested KB name at another local path, KB selects <code>&lt;name&gt;-&lt;8-char path hash&gt;</code>. A project already pointing at the same path is reused.</p>
-      <p><strong>Why:</strong> this preserves project isolation without exposing a new user choice or silently attaching the KB to the wrong path. The behavior is deterministic and covered through the public CLI.</p>
+      <h3>Project-name collisions fail closed</h3>
+      <p>When an Engine project already uses the requested KB name at another local path, KB rejects enablement. A project already pointing at the same canonical path is reused, including a lexical alias that resolves to that path.</p>
+      <p><strong>Why:</strong> this is the most conservative integration of the later reliability contract: it prevents silent attachment to the wrong project and avoids inventing a private project name the user did not request.</p>
     </div>
     <div class="card deviation">
       <h3>Automatic schema drafting remains deferred</h3>
