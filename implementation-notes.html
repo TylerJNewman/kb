@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>kb onboarding repair — implementation report</title>
+  <style>
+    :root{color-scheme:light dark;--paper:#faf8f1;--ink:#171713;--muted:#68655b;--line:#d9d4c5;--card:#fffdf7;--accent:#8a3324;--good:#17643a;--warn:#8a5a10;--code:#f0ede3}
+    @media(prefers-color-scheme:dark){:root{--paper:#11110f;--ink:#eeeae0;--muted:#aaa69a;--line:#37342e;--card:#191815;--accent:#e49a77;--good:#78d49c;--warn:#e8bd6d;--code:#24221d}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    main{max-width:980px;margin:auto;padding:52px 24px 110px}h1,h2,h3{line-height:1.18}h1{font-size:clamp(2.2rem,7vw,4.6rem);letter-spacing:-.045em;margin:.15em 0}h2{margin-top:2.7em;padding-bottom:.35em;border-bottom:1px solid var(--line)}h3{margin-bottom:.25em}.lede{font-size:1.22rem;color:var(--muted);max-width:760px}.eyebrow{font-size:.78rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+    .status{display:inline-block;padding:.3em .75em;border:1px solid var(--good);border-radius:999px;color:var(--good);font-weight:750}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}.card h3{margin-top:0}.metric{font-size:1.8rem;font-weight:800;display:block}.muted{color:var(--muted)}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);padding:.08em .34em;border-radius:4px;font-size:.9em}pre{background:var(--code);padding:16px;border:1px solid var(--line);border-radius:10px;overflow:auto}pre code{padding:0;background:transparent}.flow{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap}.flow span{flex:1 1 135px;border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--card)}.flow b{display:block;color:var(--accent)}
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid var(--line)}th{font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}.good{color:var(--good);font-weight:750}.warn{color:var(--warn);font-weight:750}a{color:var(--accent)}ul,ol{padding-left:1.35rem}li+li{margin-top:.4em}details{border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--card);margin:10px 0}summary{cursor:pointer;font-weight:700}
+    fieldset{border:1px solid var(--line);border-radius:12px;margin:14px 0;padding:16px 18px}legend{font-weight:800;padding:0 6px}.choice{display:block;padding:7px 0}.choice input{margin-right:8px}button{font:inherit;font-weight:800;border:0;border-radius:999px;padding:11px 18px;background:var(--accent);color:white;cursor:pointer}button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:3px}#quizResult{font-weight:800;margin-left:12px}.receipt{border-left:4px solid var(--good)}.deviation{border-left:4px solid var(--warn)}footer{margin-top:4rem;color:var(--muted);font-size:.9rem}
+  </style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Implementation report · 2026-07-10</p>
+  <span class="status">Implemented and reviewed</span>
+  <h1>The onboarding now tells the truth about state.</h1>
+  <p class="lede">The original issue looked like one unexplained proper noun—“Basic Memory.” Adversarial QA showed a deeper problem: the beginner story had drifted away from the runtime, targeting, and handoff state machine. This report explains what changed, why, how it was verified, what was deliberately deferred, and what you should understand before calling the work complete.</p>
+
+  <section aria-labelledby="summary-title">
+    <h2 id="summary-title">Executive summary</h2>
+    <div class="grid">
+      <div class="card"><span class="metric">5</span><strong>adversarial lenses</strong><p class="muted">Brand-new user, grandparent, impatient power user, expert state-machine user, and skeptical abandoner.</p></div>
+      <div class="card"><span class="metric">8 + 2</span><strong>kept findings</strong><p class="muted">Eight swarm findings plus explicit targeting and Git recovery added by Oracle.</p></div>
+      <div class="card"><span class="metric">51,334</span><strong>Oracle input tokens</strong><p class="muted">GPT-5.6 Pro reviewed the evidence and plan, returning 4,881 tokens of recommendations.</p></div>
+      <div class="card"><span class="metric">PASS / PASS</span><strong>two-axis review</strong><p class="muted">Standards and Spec agents both passed the corrected working tree.</p></div>
+    </div>
+    <p>The core outcome: a newcomer can now install the real runtime, create a real sample, target the intended KB, stop at the AI boundary, require the completion receipt, recover abandoned work, and verify only after the state transition is complete.</p>
+  </section>
+
+  <section aria-labelledby="intuition-title">
+    <h2 id="intuition-title">The intuition: onboarding is a state machine</h2>
+    <p>The previous pages described a sequence of commands as if they were prose. But the product has durable states: no runtime, no KB, a staged source, a pending agent handoff, a completed handoff, and an optional search upgrade. If the page skips one state, the user sees contradictions such as “Health: ok” while pending metadata still exists.</p>
+    <div class="flow" aria-label="Corrected onboarding state flow">
+      <span><b>1. Prerequisites</b>Bun and Git verified</span>
+      <span><b>2. Scaffold</b><code>kb new research</code></span>
+      <span><b>3. Stage</b>Source copied; handoff pending</span>
+      <span><b>4. Agent</b>Memory + index + exact <code>--complete</code></span>
+      <span><b>5. Receipt</b><code>Completed Add handoff</code></span>
+      <span><b>6. Verify</b>Status and search</span>
+    </div>
+    <p>“Basic Memory” now appears only when the optional search engine matters. Before that, the user sees the concrete concept: kb’s <strong>structured markdown Memory format</strong>. Internal compatibility remains intact and the CLI’s global help calls the default format <strong>engine-compatible</strong>.</p>
+  </section>
+
+  <section aria-labelledby="qa-title">
+    <h2 id="qa-title">What the 5 Monkeys found</h2>
+    <table>
+      <thead><tr><th>Finding</th><th>Why it mattered</th><th>Disposition</th></tr></thead>
+      <tbody>
+        <tr><td>npm-only install</td><td>The launcher is <code>#!/usr/bin/env bun</code>; installation could succeed and execution fail.</td><td class="good">Fixed</td></tr>
+        <tr><td>Nonexistent sample</td><td>“Copy and run” assumed <code>~/Downloads/paper.pdf</code>.</td><td class="good">Fixed with a temporary sample</td></tr>
+        <tr><td>No real pause</td><td>Shell comments did not stop status/search from running before the AI handoff.</td><td class="good">Split into three phases</td></tr>
+        <tr><td>Missing completion receipt</td><td>Static transcripts omitted playbook step 8 and could claim healthy state too early.</td><td class="good">Full lifecycle shown</td></tr>
+        <tr><td>Unexplained “Basic Memory”</td><td>The name was overloaded as a note, format, and engine.</td><td class="good">Grounded at upgrade only</td></tr>
+        <tr><td>Abandoned-flow dead end</td><td>Retrying produced safe errors but no recovery explanation.</td><td class="good"><code>status</code> and <code>--resume</code> documented</td></tr>
+        <tr><td>History/focus divergence</td><td>Back/Forward changed the fragment while keyboard focus fell to the body.</td><td class="good">All six fragment headings focusable</td></tr>
+        <tr><td>Walkthrough cul-de-sac</td><td>The only focusable exit was an external repository link.</td><td class="good">Same-site setup links added</td></tr>
+        <tr><td>False copy success</td><td><code>execCommand</code> can return false without throwing.</td><td class="good">Failure says “Select text”</td></tr>
+        <tr><td>Implicit wrong-KB target</td><td>Current-directory resolution can beat the default KB.</td><td class="good">Tutorial uses <code>--in research</code></td></tr>
+        <tr><td>Git partial scaffold</td><td>A failed Git invocation leaves files before registration is complete.</td><td class="warn">Recovery documented; transaction fix deferred</td></tr>
+      </tbody>
+    </table>
+    <p>Discarded exploration stayed discarded: theme/voice persistence, rapid-toggle timing, quiz animation, pixel/layout assertions, and making <code>kb new</code> silently idempotent.</p>
+  </section>
+
+  <section aria-labelledby="changes-title">
+    <h2 id="changes-title">What changed</h2>
+    <div class="grid">
+      <div class="card"><h3>Install truth</h3><p>Every beginner surface now installs Bun, exports its path, installs kb, verifies <code>kb --version</code>, and checks Git before creation. The short hero preview follows the same order.</p></div>
+      <div class="card"><h3>Deterministic targeting</h3><p>Setup, status, search, completion, and resume examples use <code>--in research</code>. A probe from inside another KB proved the source still landed in <code>research</code>.</p></div>
+      <div class="card"><h3>Explicit agent seam</h3><p>The runnable setup stops after <code>kb add</code>. A separate handoff message tells the AI to follow the complete playbook, run the generated completion command, and return the receipt.</p></div>
+      <div class="card"><h3>Recovery</h3><p>Existing-KB refusal is explained as safe. Pending work points to <code>--resume</code>. Git-failed scaffolds are initialized, re-run through <code>kb new</code> for registration, then checked with status.</p></div>
+      <div class="card"><h3>Accessible navigation</h3><p>One hash-focus helper handles direct links, clicks, and <code>hashchange</code>. All fragment section headings accept programmatic focus. The visual walkthrough has ordinary same-site anchors.</p></div>
+      <div class="card"><h3>Narrow contracts</h3><p>A new test file checks prerequisites, terminology boundaries, setup/handoff/verify ordering, hero install order, focusability, receipt ordering, and recovery tokens—without snapshotting visual layout.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="files-title">
+    <h2 id="files-title">Files and responsibilities</h2>
+    <table>
+      <thead><tr><th>Files</th><th>Responsibility</th></tr></thead>
+      <tbody>
+        <tr><td><code>README.md</code>, <code>docs/START-HERE.md</code>, <code>docs/WALKTHROUGH.md</code></td><td>Canonical beginner phases, handoff, completion, recovery, and grounded engine explanation.</td></tr>
+        <tr><td><code>site/index.html</code></td><td>Self-contained setup page, fragment focus, honest copy state, recovery UI, and current roadmap language.</td></tr>
+        <tr><td><code>site/walkthrough.html</code></td><td>Full worked receipt transcript, Bun/Git prerequisites, structured terminology, and same-site exits.</td></tr>
+        <tr><td><code>src/cli.ts</code>, <code>src/memory-format.ts</code></td><td>Deterministic <code>kb start</code>, complete Add help forms, recovery text, and beginner-facing format language.</td></tr>
+        <tr><td><code>test/onboarding-contract.test.ts</code>, <code>test/cli.test.ts</code></td><td>Stable public contracts rather than visual implementation details.</td></tr>
+        <tr><td><code>test/resilience.test.ts</code></td><td>Pins the Reflect fixture mtime so the existing business-logic test is independent of today’s clock.</td></tr>
+        <tr><td><code>implementation-notes.html</code></td><td>This self-contained explanation and pass-required quiz.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section aria-labelledby="review-title">
+    <h2 id="review-title">Oracle and code review</h2>
+    <div class="card receipt"><h3>Oracle session: <code>review-onboarding-qa-plan</code></h3><p>The packx bundle contained the public pages, CLI/help code, tests, context language, and collated QA. Model selection was verified as GPT-5.6 Pro. Oracle kept all eight swarm findings, added explicit target selection and the Git prerequisite edge, and warned against a wizard, automatic completion, global internal renames, broad UI tests, or a scaffold transaction rewrite in this patch.</p></div>
+    <div class="card receipt"><h3>Two-axis review</h3><p><strong>Standards</strong> caught forbidden “prompt” vocabulary, a vague “standard format” name, and the risk of erasing the B0 compatibility distinction. <strong>Spec</strong> caught incomplete Git recovery, four non-focusable fragment headings, and the Bun-assuming hero preview. After corrections, both independent reviewers returned <strong>PASS</strong>.</p></div>
+    <p>The review’s duplicated-docs/shotgun-surgery observation is real but deferred. Generating five surfaces from one template would be a separate architecture change; the narrow contract tests now guard the stable lifecycle while that design remains open.</p>
+  </section>
+
+  <section aria-labelledby="verify-title">
+    <h2 id="verify-title">Verification receipts</h2>
+    <div class="grid">
+      <div class="card receipt"><h3>Focused contracts</h3><p><strong>75 passed, 0 failed</strong> across onboarding, CLI, and resilience files after review fixes.</p></div>
+      <div class="card receipt"><h3>Full suite</h3><p><strong>82 passed, 0 failed, 493 assertions</strong> with the repository's standard <code>bun test</code> command.</p></div>
+      <div class="card receipt"><h3>Real browser</h3><p>Direct <code>#hello</code>, <code>#core</code>, and <code>#honest</code> loads focused their headings. Back/Forward restored hello/quiz focus. Walkthrough navigation reached setup. Denied clipboard access produced “Select text.”</p></div>
+      <div class="card receipt"><h3>Executable targeting probe</h3><p>From inside a different KB: <code>research</code> received 1 raw source, the current <code>other</code> KB received 0, and status correctly showed one unfinished handoff.</p></div>
+      <div class="card receipt"><h3>Git recovery probes</h3><p>Missing Git exited 69 after a partial scaffold. With another KB already registered, <code>git init</code> + rerun <code>kb new research</code> printed <code>Recovered KB</code> and status became healthy.</p></div>
+      <div class="card receipt"><h3>Diff hygiene</h3><p><code>git diff --check</code> passed. The implementation commit touched only the planned onboarding/code/test paths. Pre-existing skill and workspace edits were not staged.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="deviations-title">
+    <h2 id="deviations-title">Deviations and conservative choices</h2>
+    <div class="card deviation"><h3>Git recovery needed two registry states</h3><p>The first isolated reproduction had no registry, so scan reconstruction made the retry return the safe “KB already exists” refusal. Spec review identified the missing state: with another KB already registered, the partial scaffold is invisible until <code>kb new research</code> is rerun, which prints <code>Recovered KB</code>. Final guidance covers both results, then continues to status.</p></div>
+    <div class="card deviation"><h3>Reflect test clock</h3><p>The full suite exposed an existing date-dependent fixture whose hard-coded “now” had become earlier than the file created by the test. The fixture mtime is now pinned one hour before its test clock. No Reflect production logic changed.</p></div>
+    <div class="card deviation"><h3>Git transaction remains deferred</h3><p>The CLI still writes scaffold files before Git initialization and can temporarily consider that folder complete. Fixing transaction/recovery semantics is a separate business-logic change; this patch documents a verified recovery path without weakening validation or widening scope.</p></div>
+  </section>
+
+  <section aria-labelledby="preserve-title">
+    <h2 id="preserve-title">What was preserved</h2>
+    <ul>
+      <li><code>kb start</code> remains deterministic, read-only, text-only, and non-interactive.</li>
+      <li>The Basic Memory file-format compatibility contract and engine-specific names remain intact internally and at engine boundaries.</li>
+      <li><code>kb new</code> still refuses duplicates; no silent idempotency or automatic recovery was added.</li>
+      <li><code>kb add --complete</code> remains an explicit validated receipt; nothing auto-completes pending work.</li>
+      <li>No dependency, router, DOM library, visual snapshot, animation test, theme persistence, or timing test was added.</li>
+      <li>Pre-existing changes under <code>.agents/</code>, <code>skills-lock.json</code>, <code>.scratch/</code>, <code>agent/</code>, and <code>tickets.md</code> were not modified or staged by this work.</li>
+    </ul>
+  </section>
+
+  <section id="quiz" aria-labelledby="quiz-title">
+    <p class="eyebrow">Required checkpoint</p>
+    <h2 id="quiz-title">Pass the change quiz</h2>
+    <p>You must score <strong>7/7</strong>. The result explains what to revisit; submit again until you pass.</p>
+    <form id="knowledgeQuiz">
+      <fieldset><legend>1. Why is Basic Memory introduced only in the upgrade section?</legend>
+        <label class="choice"><input type="radio" name="q1" value="a"> Because it is the optional search engine identity, not required beginner vocabulary.</label>
+        <label class="choice"><input type="radio" name="q1" value="b"> Because the format stopped being compatible with it.</label>
+        <label class="choice"><input type="radio" name="q1" value="c"> Because kb now contains its own AI.</label>
+      </fieldset>
+      <fieldset><legend>2. Why do tutorial commands use <code>--in research</code>?</legend>
+        <label class="choice"><input type="radio" name="q2" value="a"> It makes commands faster.</label>
+        <label class="choice"><input type="radio" name="q2" value="b"> The current-directory KB can otherwise win target resolution.</label>
+        <label class="choice"><input type="radio" name="q2" value="c"> It creates the Registry.</label>
+      </fieldset>
+      <fieldset><legend>3. When should the user run status and search?</legend>
+        <label class="choice"><input type="radio" name="q3" value="a"> Immediately after <code>kb add</code>.</label>
+        <label class="choice"><input type="radio" name="q3" value="b"> Before the AI writes anything.</label>
+        <label class="choice"><input type="radio" name="q3" value="c"> After the AI returns the <code>Completed Add handoff</code> receipt.</label>
+      </fieldset>
+      <fieldset><legend>4. What is the verified Git-failure recovery?</legend>
+        <label class="choice"><input type="radio" name="q4" value="a"> Delete the KB and start over.</label>
+        <label class="choice"><input type="radio" name="q4" value="b"> Initialize Git, rerun <code>kb new research</code> to register/recover, then check status.</label>
+        <label class="choice"><input type="radio" name="q4" value="c"> Enable Basic Memory.</label>
+      </fieldset>
+      <fieldset><legend>5. What should the Copy button say when copying returns false?</legend>
+        <label class="choice"><input type="radio" name="q5" value="a"> Copied</label>
+        <label class="choice"><input type="radio" name="q5" value="b"> Select text</label>
+        <label class="choice"><input type="radio" name="q5" value="c"> Try later</label>
+      </fieldset>
+      <fieldset><legend>6. Which events restore fragment focus?</legend>
+        <label class="choice"><input type="radio" name="q6" value="a"> Only mouse clicks.</label>
+        <label class="choice"><input type="radio" name="q6" value="b"> Initial hashed load, internal activation, and hash changes such as Back/Forward.</label>
+        <label class="choice"><input type="radio" name="q6" value="c"> Theme toggles.</label>
+      </fieldset>
+      <fieldset><legend>7. What was deliberately not changed?</legend>
+        <label class="choice"><input type="radio" name="q7" value="a"> The Add help forms.</label>
+        <label class="choice"><input type="radio" name="q7" value="b"> The beginner terminology.</label>
+        <label class="choice"><input type="radio" name="q7" value="c"> Scaffold transaction semantics and automatic completion behavior.</label>
+      </fieldset>
+      <button type="submit">Check my score</button><span id="quizResult" role="status" aria-live="polite"></span>
+    </form>
+    <details><summary>Answer explanations</summary><ol><li>Basic Memory is named where the optional engine identity matters; the basic files stay compatible.</li><li>Target resolution prefers a containing KB, so explicit targeting makes copied instructions deterministic.</li><li>The receipt is the state transition from pending to complete.</li><li>Git initialization repairs the repo; rerunning <code>kb new</code> registers or safely recognizes the existing scaffold.</li><li>False success is worse than honest manual recovery.</li><li>The helper covers direct entry and browser history, not only click handlers.</li><li>This patch documents the Git edge but does not rewrite scaffold transactions or infer completion.</li></ol></details>
+  </section>
+
+  <footer>Self-contained report. No external scripts, fonts, or network resources.</footer>
+</main>
+<script>
+  (function(){
+    var form=document.getElementById("knowledgeQuiz");
+    var result=document.getElementById("quizResult");
+    var answers={q1:"a",q2:"b",q3:"c",q4:"b",q5:"b",q6:"b",q7:"c"};
+    form.addEventListener("submit",function(event){
+      event.preventDefault();
+      var data=new FormData(form);var score=0;var missing=[];
+      Object.keys(answers).forEach(function(key){var value=data.get(key);if(value===null)missing.push(key.slice(1));if(value===answers[key])score+=1;});
+      if(missing.length){result.textContent="Answer every question. Missing: "+missing.join(", ")+".";result.className="warn";return;}
+      if(score===7){result.textContent="PASS — 7/7. You understand the change.";result.className="good";}
+      else{result.textContent="Not yet — "+score+"/7. Review the explanations and retry; passing requires 7/7.";result.className="warn";}
+    });
+  }());
+</script>
+</body>
+</html>

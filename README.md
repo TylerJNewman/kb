@@ -31,7 +31,7 @@ kb add "$sample_dir/hello.txt" --in research
 
 `kb new research` creates `~/kb/research/`, makes it your default KB, and records it in `~/.config/kb/config.yaml`. `kb add` accepts an existing relative or absolute source path, leaves the original alone, copies it into `raw/`, creates a pending handoff, and prints an Add playbook. `--in research` keeps the tutorial pointed at this KB even if your terminal is inside another one.
 
-Stop here and give your AI agent this prompt:
+Stop here and send your AI agent this handoff message:
 
 > Work in `~/kb/research`. Follow the complete Add playbook printed above. Read the staged raw source without editing it, write the Memory and index entry, run the exact final `kb add --complete ... --in research` command from the playbook, and return its `Completed Add handoff` receipt.
 
@@ -49,7 +49,7 @@ rm -rf "$sample_dir"
 
 Do not recreate an existing KB. Run `kb status --in research`. If it lists unfinished Add work, run the shown `kb add --resume <raw-ref> --in research` command and give the complete resumed playbook to your AI. `KB already exists` is a safe refusal; it does not delete or replace the KB.
 
-If `kb new` previously failed with `git init failed`, install Git, repair the partial scaffold with `git -C ~/kb/research init`, then continue with `kb status --in research`. Do not rerun `kb new research`; the current CLI safely refuses because the scaffold already exists.
+If `kb new` previously failed with `git init failed`, install Git, run `git -C ~/kb/research init`, then rerun `kb new research` so kb can register the repaired scaffold. It prints either `Recovered KB` or the safe refusal `KB already exists`; then continue with `kb status --in research`.
 
 You do not need to prepare a project folder first. Use `kb init` only when you intentionally want to turn the current directory into a KB.
 

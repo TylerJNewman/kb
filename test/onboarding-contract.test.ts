@@ -28,7 +28,7 @@ test("beginner install guidance includes the runtime and Git required by kb", as
   }
 });
 
-test("first-run public language reserves Basic Memory for the optional engine", async () => {
+test("first-run public language explains compatibility without pre-upgrade engine jargon", async () => {
   const publicLanguage = [
     ...(await Promise.all(beginnerSurfaces.map(text))),
     await text("src/cli.ts"),
@@ -44,27 +44,57 @@ test("first-run public language reserves Basic Memory for the optional engine", 
     expect(publicLanguage).not.toContain(leakedPhrase);
   }
   expect(publicLanguage).toContain("optional local search engine, Basic Memory");
+  expect(publicLanguage).toContain("engine-compatible Memory format");
 });
 
 test("HTML setup stops for the agent before verification commands run", async () => {
   const page = await text("site/index.html");
   const setupStart = page.indexOf('id="setupCode"');
-  const promptStart = page.indexOf('id="agentPrompt"');
+  const handoffStart = page.indexOf('id="agentHandoff"');
   const verifyStart = page.indexOf('id="verifyCode"');
 
   expect(setupStart).toBeGreaterThan(-1);
-  expect(promptStart).toBeGreaterThan(setupStart);
-  expect(verifyStart).toBeGreaterThan(promptStart);
+  expect(handoffStart).toBeGreaterThan(setupStart);
+  expect(verifyStart).toBeGreaterThan(handoffStart);
 
-  const setup = page.slice(setupStart, promptStart);
-  const prompt = page.slice(promptStart, verifyStart);
+  const setup = page.slice(setupStart, handoffStart);
+  const handoff = page.slice(handoffStart, verifyStart);
   const verify = page.slice(verifyStart);
   expect(setup).toContain('kb add "$sample_dir/hello.txt" --in research');
   expect(setup).not.toContain("kb status");
   expect(setup).not.toContain("kb search");
-  expect(prompt).toContain("kb add --complete");
+  expect(handoff).toContain("kb add --complete");
   expect(verify).toContain("kb status --in research");
   expect(verify).toContain('kb search "vector search" --in research');
+});
+
+test("hero preview installs Bun before invoking it", async () => {
+  const page = await text("site/index.html");
+  const previewStart = page.indexOf('aria-label="kb terminal preview"');
+  const previewEnd = page.indexOf("</code></pre>", previewStart);
+  const preview = page.slice(previewStart, previewEnd);
+  const orderedTokens = [
+    "curl -fsSL https://bun.com/install | bash",
+    "export BUN_INSTALL=",
+    "export PATH=",
+    "bun install --global @tylerjnewman/kb",
+    "kb --version",
+    "git --version",
+  ];
+
+  let previous = -1;
+  for (const token of orderedTokens) {
+    const current = preview.indexOf(token);
+    expect(current, token).toBeGreaterThan(previous);
+    previous = current;
+  }
+});
+
+test("every fragment section heading can receive restored keyboard focus", async () => {
+  const page = await text("site/index.html");
+  for (const id of ["core-title", "layout-title", "grow-title", "quiz-title", "hello-title", "honest-title"]) {
+    expect(page).toContain(`<h2 id="${id}" tabindex="-1">`);
+  }
 });
 
 test("worked walkthroughs show the Add receipt before healthy status", async () => {
@@ -84,5 +114,7 @@ test("onboarding exposes safe recovery without making kb new idempotent", async 
     const content = await text(path);
     expect(content, path).toContain("kb status --in research");
     expect(content, path).toContain("kb add --resume");
+    expect(content, path).toContain("git -C ~/kb/research init");
+    expect(content, path).toContain("register the repaired scaffold");
   }
 });

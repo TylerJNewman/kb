@@ -365,7 +365,7 @@ Rules of thumb:
   Start with: kb start
   kb start prints the first-run path: new -> add -> agent writes Memory -> search -> status.
   kb new creates under KB Home: ~/kb/<name>/; kb init scaffolds the cwd.
-  The default Arm is b0: plain markdown, standard Memory format, Engine disabled.
+  The default Arm is b0: plain markdown, engine-compatible Memory format, Engine disabled.
   Scaffold Arms: wiki, b0. b1 is reached with kb enable search; b2 is deferred.
   Retrieval favors b0/b1; curation favors wiki.
   Drift tax rises with eager wiki curation; use kb check and reflect when it does.
@@ -463,7 +463,7 @@ Rules of thumb:
 `,
     draft: `kb draft <title...>
 
-Create a blank Memory in kb's standard markdown format for the agent to write.
+Create a blank Memory in kb's structured markdown format for the agent to write.
 
 Usage:
   kb draft <title...> [--in <name>]
@@ -603,6 +603,8 @@ Coming back or retrying?
   If status lists unfinished Add work, recover its playbook with:
     kb add --resume <raw-ref> --in research
   Give the complete resumed playbook to the agent. "KB already exists" is a safe refusal.
+  If create failed with "git init failed", run: git -C ${kbRoot} init
+  Then rerun kb new research to register the repaired scaffold before checking status.
 
 Rules of thumb:
   kb start is optional and read-only; it only prints this text.
@@ -1790,7 +1792,7 @@ function reflectPlaybook(
     "",
     "Agent half:",
     "1. Read exactly the Memory refs listed above.",
-    "2. Write any useful cross-memory synthesis back into memories/ as standard markdown Memories.",
+    "2. Write any useful cross-memory synthesis back into memories/ as structured markdown Memories.",
     "3. Add or update index.md lines only for Memories you actually create or revise.",
     "4. Do not claim contradiction detection, stale-fact judgment, or semantic consolidation as guaranteed by kb reflect.",
   );
@@ -1929,7 +1931,7 @@ URL behavior: ${urlBehavior}
 
 Agent half:
 1. Read ${rawRef} without editing it.
-2. Write or update ${memoryRef} in kb's standard markdown Memory format.
+2. Write or update ${memoryRef} in kb's structured markdown Memory format.
 3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
 4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
 5. Add or update one index.md line: ${indexLine(memoryRef, staged.title)}

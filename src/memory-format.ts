@@ -37,7 +37,7 @@ TODO
 
 export function memoryFormatPlaybookLines(memoryRef: string, title: string): string[] {
   return [
-    `Write ${memoryRef} in kb's standard markdown Memory format.`,
+    `Write ${memoryRef} in kb's structured markdown Memory format.`,
     "Include an executive summary of about 150 words or less.",
     `Extract observations as "${OBSERVATION_EXAMPLE}".`,
     `Extract relations as "${RELATION_EXAMPLE}".`,

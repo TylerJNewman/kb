@@ -155,6 +155,8 @@ test("kb start on an empty environment prints create-your-first guidance", async
   expect(result.stdout).toContain('kb search "vector search" --in research');
   expect(result.stdout).toContain("kb status --in research");
   expect(result.stdout).toContain("kb add --resume <raw-ref> --in research");
+  expect(result.stdout).toContain(`git -C ${join(harness.home, "kb", "research")} init`);
+  expect(result.stdout).toContain("rerun kb new research to register the repaired scaffold");
 });
 
 test("kb add --help exposes stage, resume, and completion forms", async () => {
@@ -549,7 +551,7 @@ URL behavior: local file copied verbatim into raw/.
 Agent half:
 1. Read raw/${rawFiles[0]} without editing it.
 2. Check memories/ and index.md for an existing Memory on this subject first.
-3. Write memories/source.md in kb's standard markdown Memory format.
+3. Write memories/source.md in kb's structured markdown Memory format.
 4. Include an executive summary of about 150 words or less.
 5. Extract observations as "- [category] fact #tag".
 6. Extract relations as "- relates_to [[Target]]".
@@ -599,7 +601,7 @@ URL behavior: local file copied verbatim into raw/.
 
 Agent half:
 1. Read raw/${rawFile} without editing it.
-2. Write or update memories/source.md in kb's standard markdown Memory format.
+2. Write or update memories/source.md in kb's structured markdown Memory format.
 3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
 4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
 5. Add or update one index.md line: - [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>
@@ -1171,7 +1173,7 @@ Changed since last reflect: 1
 
 Agent half:
 1. Read exactly the Memory refs listed above.
-2. Write any useful cross-memory synthesis back into memories/ as standard markdown Memories.
+2. Write any useful cross-memory synthesis back into memories/ as structured markdown Memories.
 3. Add or update index.md lines only for Memories you actually create or revise.
 4. Do not claim contradiction detection, stale-fact judgment, or semantic consolidation as guaranteed by kb reflect.
 5. When the Agent half is complete, run:

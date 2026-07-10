@@ -22,7 +22,7 @@ Humans quit knowledge bases because the *filing* grows faster than the value. Th
 
 > **`kb` does the deterministic filing. The AI creates the derived knowledge: the Memory and its one-line `index.md` catalog entry.**
 
-The clever part: **`kb` has no AI inside it.** When you run `kb add paper.pdf`, it copies the file into `raw/`, stamps the log, and prints a **playbook**. The playbook tells your AI to read the untouched source, write a Memory in kb's standard markdown format, add or update one catalog line in `index.md`, and run the printed completion command. `kb` does not write the Memory or index line itself.
+The clever part: **`kb` has no AI inside it.** When you run `kb add paper.pdf`, it copies the file into `raw/`, stamps the log, and prints a **playbook**. The playbook tells your AI to read the untouched source, write a Memory in kb's structured markdown format, add or update one catalog line in `index.md`, and run the printed completion command. `kb` does not write the Memory or index line itself.
 
 That is why `kb` works with *any* agent and installs nothing heavy. The CLI is small, dumb, and reliable. The intelligence is rented from whatever agent is driving.
 
@@ -188,7 +188,7 @@ Expected result: `kb` leaves the sample in place, copies its contents into `~/kb
 
 ### 5. Let your AI follow the playbook
 
-Stop running shell commands and give your AI this prompt:
+Stop running shell commands and send your AI this handoff message:
 
 > Work in `~/kb/research`. Follow the complete Add playbook printed above. Read the staged raw source without editing it, write the Memory and index entry, run the exact final `kb add --complete ... --in research` command from the playbook, and return its `Completed Add handoff` receipt.
 
@@ -196,7 +196,7 @@ Your AI:
 
 1. reads the staged `raw/` file without editing it;
 2. checks for an existing Memory on the subject;
-3. writes the target Memory in kb's standard markdown format;
+3. writes the target Memory in kb's structured markdown format;
 4. adds or updates one catalog line in `index.md`; and
 5. runs the exact completion command from the playbook.
 
@@ -222,7 +222,7 @@ That is it: **install → optional walkthrough → new → add a file path → a
 
 Do not recreate an existing KB. Run `kb status --in research`. If it lists unfinished Add work, run its shown `kb add --resume <raw-ref> --in research` command and give the complete resumed playbook to your AI. `KB already exists` is a safe refusal; it does not replace your files.
 
-If an earlier `kb new` failed with `git init failed`, install Git, run `git -C ~/kb/research init`, then continue with `kb status --in research`. Do not rerun `kb new research`; the existing scaffold is preserved.
+If an earlier `kb new` failed with `git init failed`, install Git, run `git -C ~/kb/research init`, then rerun `kb new research` so kb can register the repaired scaffold. It prints either `Recovered KB` or the safe refusal `KB already exists`; then continue with `kb status --in research`.
 
 **What about `kb init`?** It scaffolds the current directory. That is useful for an existing project you deliberately want to make into a KB, but it is not the beginner path.
 

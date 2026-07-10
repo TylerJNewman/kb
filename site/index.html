@@ -513,7 +513,10 @@
         </div>
         <div class="terminal-card" aria-label="kb terminal preview">
           <div class="terminal-top" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
-          <pre><code>$ bun install --global @tylerjnewman/kb
+          <pre><code>$ curl -fsSL https://bun.com/install | bash
+$ export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+$ export PATH="$BUN_INSTALL/bin:$PATH"
+$ bun install --global @tylerjnewman/kb
 $ kb --version
 $ git --version
 
@@ -535,7 +538,7 @@ writes Memory + index, runs --complete</code></pre>
       <div class="section-head">
         <div>
           <p class="eyebrow">The core idea</p>
-          <h2 id="core-title">Split the work.</h2>
+          <h2 id="core-title" tabindex="-1">Split the work.</h2>
         </div>
         <p class="subtle">Knowledge bases fail when thinking and filing get mixed together. kb keeps the reliable job in reliable code and rents the smart job from the agent you already use.</p>
       </div>
@@ -569,7 +572,7 @@ writes Memory + index, runs --complete</code></pre>
       <div class="section-head">
         <div>
           <p class="eyebrow">What you get</p>
-          <h2 id="layout-title">A folder, not a trap.</h2>
+          <h2 id="layout-title" tabindex="-1">A folder, not a trap.</h2>
         </div>
         <p class="subtle">Run <code>kb new research</code> from anywhere and get plain markdown under <code>~/kb/research/</code>. Do not open a random folder first; <code>kb init</code> is only for turning the current directory into a KB on purpose.</p>
       </div>
@@ -587,7 +590,7 @@ writes Memory + index, runs --complete</code></pre>
       <div class="section-head">
         <div>
           <p class="eyebrow">Start small, grow later</p>
-          <h2 id="grow-title">No migration story.</h2>
+          <h2 id="grow-title" tabindex="-1">No migration story.</h2>
         </div>
         <p class="subtle">The default is plain files with plain-file search. When the pain appears, the Advisor explains the optional upgrade.</p>
       </div>
@@ -644,7 +647,7 @@ kb add "$sample_dir/hello.txt" --in research</code></pre>
       </div>
       <div class="panel" style="margin-top:14px">
         <strong>2. Stop and hand off to your AI</strong>
-        <p id="agentPrompt">Work in <code>~/kb/research</code>. Follow the complete Add playbook printed above. Read the staged raw source without editing it, write the Memory in kb's standard markdown format, update the index entry, run the exact final <code>kb add --complete ... --in research</code> command from the playbook, and return its <code>Completed Add handoff</code> receipt.</p>
+        <p id="agentHandoff">Work in <code>~/kb/research</code>. Follow the complete Add playbook printed above. Read the staged raw source without editing it, write the Memory in kb's structured markdown format, update the index entry, run the exact final <code>kb add --complete ... --in research</code> command from the playbook, and return its <code>Completed Add handoff</code> receipt.</p>
         <p class="subtle">Do not invent the generated raw hash or Memory path. Wait for the receipt before continuing.</p>
       </div>
       <div class="terminal-card" style="margin-top:14px">
@@ -656,7 +659,7 @@ rm -rf "$sample_dir"  # optional; kb already copied the source</code></pre>
       <div class="panel" style="margin-top:14px">
         <strong>Coming back or retrying?</strong>
         <p>Do not recreate an existing KB. Run <code>kb status --in research</code>. If it lists unfinished Add work, run its shown <code>kb add --resume &lt;raw-ref&gt; --in research</code> command and give the complete resumed playbook to your AI. <code>KB already exists</code> is a safe refusal.</p>
-        <p>If an earlier create failed with <code>git init failed</code>, install Git, run <code>git -C ~/kb/research init</code>, then continue with status. Do not rerun <code>kb new research</code>; the scaffold is already there.</p>
+        <p>If an earlier create failed with <code>git init failed</code>, install Git, run <code>git -C ~/kb/research init</code>, then rerun <code>kb new research</code> so kb can register the repaired scaffold. It prints either <code>Recovered KB</code> or the safe refusal <code>KB already exists</code>; then continue with status.</p>
       </div>
     </section>
 
@@ -664,7 +667,7 @@ rm -rf "$sample_dir"  # optional; kb already copied the source</code></pre>
       <div class="section-head">
         <div>
           <p class="eyebrow">The honest footer</p>
-          <h2 id="honest-title">You own the files.</h2>
+          <h2 id="honest-title" tabindex="-1">You own the files.</h2>
         </div>
         <p class="subtle">kb is local-first plain markdown. The repo is TylerJNewman/kb. No external service owns the knowledge base.</p>
       </div>

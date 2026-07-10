@@ -99,7 +99,7 @@ URL behavior: local file copied verbatim into raw/.
 Agent half:
 1. Read raw/paper-0123456789ab.txt without editing it.
 2. Check memories/ and index.md for an existing Memory on this subject first.
-3. Write memories/paper.md in kb's standard markdown Memory format.
+3. Write memories/paper.md in kb's structured markdown Memory format.
 4. Include an executive summary of about 150 words or less.
 5. Extract observations as "- [category] fact #tag".
 6. Extract relations as "- relates_to [[Target]]".
