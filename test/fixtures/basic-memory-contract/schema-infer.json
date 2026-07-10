@@ -1,0 +1,22 @@
+{
+  "note_type": "meeting",
+  "notes_analyzed": 4,
+  "field_frequencies": [
+    {
+      "name": "summary",
+      "source": "observation",
+      "count": 4,
+      "total": 4,
+      "percentage": 1.0,
+      "sample_values": ["Discussed launch timing"],
+      "is_array": false,
+      "target_type": null
+    }
+  ],
+  "suggested_schema": {
+    "summary": "string, meeting summary"
+  },
+  "suggested_required": ["summary"],
+  "suggested_optional": [],
+  "excluded": []
+}

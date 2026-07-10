@@ -1,0 +1,15 @@
+{
+  "note_type": "meeting",
+  "schema_found": true,
+  "new_fields": [
+    {
+      "name": "decision",
+      "source": "observation",
+      "count": 3,
+      "total": 4,
+      "percentage": 0.75
+    }
+  ],
+  "dropped_fields": [],
+  "cardinality_changes": []
+}

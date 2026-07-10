@@ -3,195 +3,443 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>kb onboarding repair — implementation report</title>
+  <title>Machine-safe ingestion — implementation report</title>
   <style>
-    :root{color-scheme:light dark;--paper:#faf8f1;--ink:#171713;--muted:#68655b;--line:#d9d4c5;--card:#fffdf7;--accent:#8a3324;--good:#17643a;--warn:#8a5a10;--code:#f0ede3}
-    @media(prefers-color-scheme:dark){:root{--paper:#11110f;--ink:#eeeae0;--muted:#aaa69a;--line:#37342e;--card:#191815;--accent:#e49a77;--good:#78d49c;--warn:#e8bd6d;--code:#24221d}}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    main{max-width:980px;margin:auto;padding:52px 24px 110px}h1,h2,h3{line-height:1.18}h1{font-size:clamp(2.2rem,7vw,4.6rem);letter-spacing:-.045em;margin:.15em 0}h2{margin-top:2.7em;padding-bottom:.35em;border-bottom:1px solid var(--line)}h3{margin-bottom:.25em}.lede{font-size:1.22rem;color:var(--muted);max-width:760px}.eyebrow{font-size:.78rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
-    .status{display:inline-block;padding:.3em .75em;border:1px solid var(--good);border-radius:999px;color:var(--good);font-weight:750}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}.card h3{margin-top:0}.metric{font-size:1.8rem;font-weight:800;display:block}.muted{color:var(--muted)}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);padding:.08em .34em;border-radius:4px;font-size:.9em}pre{background:var(--code);padding:16px;border:1px solid var(--line);border-radius:10px;overflow:auto}pre code{padding:0;background:transparent}.flow{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap}.flow span{flex:1 1 135px;border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--card)}.flow b{display:block;color:var(--accent)}
-    table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid var(--line)}th{font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}.good{color:var(--good);font-weight:750}.warn{color:var(--warn);font-weight:750}a{color:var(--accent)}ul,ol{padding-left:1.35rem}li+li{margin-top:.4em}details{border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--card);margin:10px 0}summary{cursor:pointer;font-weight:700}
-    fieldset{border:1px solid var(--line);border-radius:12px;margin:14px 0;padding:16px 18px}legend{font-weight:800;padding:0 6px}.choice{display:block;padding:7px 0}.choice input{margin-right:8px}button{font:inherit;font-weight:800;border:0;border-radius:999px;padding:11px 18px;background:var(--accent);color:white;cursor:pointer}button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:3px}#quizResult{font-weight:800;margin-left:12px}.receipt{border-left:4px solid var(--good)}.deviation{border-left:4px solid var(--warn)}footer{margin-top:4rem;color:var(--muted);font-size:.9rem}
+    :root {
+      color-scheme: light dark;
+      --paper: #f6f2e8;
+      --ink: #1b1d19;
+      --muted: #66685f;
+      --line: #d5cfbf;
+      --card: #fffdf7;
+      --code: #ebe7dc;
+      --accent: #315b52;
+      --accent-ink: #fff;
+      --good: #17643a;
+      --warn: #8a5a10;
+      --bad: #9d2c2c;
+      --pending: #725b20;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #111310;
+        --ink: #eeece5;
+        --muted: #aaa99f;
+        --line: #393a34;
+        --card: #191b17;
+        --code: #252720;
+        --accent: #8bc3b5;
+        --accent-ink: #10201c;
+        --good: #78d49c;
+        --warn: #e8bd6d;
+        --bad: #f09898;
+        --pending: #e5c976;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 16px/1.62 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1040px; margin: auto; padding: 52px 24px 110px; }
+    h1, h2, h3 { line-height: 1.18; }
+    h1 { margin: .16em 0; font-size: clamp(2.35rem, 7vw, 4.9rem); letter-spacing: -.05em; }
+    h2 { margin-top: 2.8em; padding-bottom: .38em; border-bottom: 1px solid var(--line); }
+    h3 { margin-bottom: .32em; }
+    p { max-width: 82ch; }
+    a { color: var(--accent); }
+    .eyebrow { color: var(--accent); font-size: .78rem; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+    .lede { max-width: 780px; color: var(--muted); font-size: 1.22rem; }
+    .status {
+      display: inline-block;
+      padding: .3em .78em;
+      border: 1px solid var(--pending);
+      border-radius: 999px;
+      color: var(--pending);
+      font-weight: 800;
+    }
+    nav { margin: 28px 0 0; padding: 13px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+    nav a { display: inline-block; margin: 3px 14px 3px 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 14px; }
+    .card { margin: 14px 0; padding: 18px 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+    .card h3 { margin-top: 0; }
+    .metric { display: block; font-size: 1.75rem; font-weight: 850; }
+    .muted { color: var(--muted); }
+    .good { color: var(--good); font-weight: 800; }
+    .warn { color: var(--warn); font-weight: 800; }
+    .bad { color: var(--bad); font-weight: 800; }
+    .pending { color: var(--pending); font-weight: 800; }
+    .receipt { border-left: 5px solid var(--good); }
+    .placeholder { border-left: 5px solid var(--pending); }
+    .deviation { border-left: 5px solid var(--warn); }
+    code { padding: .08em .34em; border-radius: 4px; background: var(--code); font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    pre { overflow: auto; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--code); }
+    pre code { padding: 0; background: transparent; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: .42em; }
+    .flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+    .flow > div { flex: 1 1 150px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+    .flow b { display: block; color: var(--accent); }
+    .arrow { display: block; color: var(--muted); font-weight: 850; }
+    details { margin: 10px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+    summary { cursor: pointer; font-weight: 800; }
+    fieldset { margin: 16px 0; padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; }
+    legend { padding: 0 7px; font-weight: 850; }
+    .choice { display: block; padding: 7px 0; }
+    .choice input { margin-right: 8px; }
+    .feedback { min-height: 1.6em; margin: 8px 0 0; font-size: .94rem; }
+    fieldset.correct { border-color: var(--good); }
+    fieldset.incorrect { border-color: var(--bad); }
+    button { padding: 11px 19px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 850; cursor: pointer; }
+    button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+    #quizResult { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-weight: 850; }
+    footer { margin-top: 4rem; color: var(--muted); font-size: .9rem; }
+    @media (max-width: 620px) { th:nth-child(3), td:nth-child(3) { display: none; } }
   </style>
 </head>
 <body>
 <main>
   <p class="eyebrow">Implementation report · 2026-07-10</p>
-  <span class="status">Implemented and reviewed</span>
-  <h1>The onboarding now tells the truth about state.</h1>
-  <p class="lede">The original issue looked like one unexplained proper noun—“Basic Memory.” Adversarial QA showed a deeper problem: the beginner story had drifted away from the runtime, targeting, and handoff state machine. This report explains what changed, why, how it was verified, what was deliberately deferred, and what you should understand before calling the work complete.</p>
+  <span class="status">Implementation in progress · final receipts pending</span>
+  <h1>Safe ingestion is a protocol, not a folder.</h1>
+  <p class="lede">This change turns <code>kb add</code> into a durable handoff for machine producers such as Screenpipe. KB records bytes, identity, provenance, and state. An agent still makes the semantic decision about what belongs in durable Memory.</p>
+
+  <nav aria-label="Report sections">
+    <a href="#context">Context</a>
+    <a href="#intuition">Intuition</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#change-map">Change map</a>
+    <a href="#verification">Verification</a>
+    <a href="#deviations">Deviations</a>
+    <a href="#quiz">Quiz</a>
+  </nav>
 
   <section aria-labelledby="summary-title">
     <h2 id="summary-title">Executive summary</h2>
     <div class="grid">
-      <div class="card"><span class="metric">5</span><strong>adversarial lenses</strong><p class="muted">Brand-new user, grandparent, impatient power user, expert state-machine user, and skeptical abandoner.</p></div>
-      <div class="card"><span class="metric">8 + 2</span><strong>kept findings</strong><p class="muted">Eight swarm findings plus explicit targeting and Git recovery added by Oracle.</p></div>
-      <div class="card"><span class="metric">51,334</span><strong>Oracle input tokens</strong><p class="muted">GPT-5.6 Pro reviewed the evidence and plan, returning 4,881 tokens of recommendations.</p></div>
-      <div class="card"><span class="metric">PASS / PASS</span><strong>two-axis review</strong><p class="muted">Standards and Spec agents both passed the corrected working tree.</p></div>
+      <div class="card"><span class="metric">1 public CLI</span><strong>KB stays the interface</strong><p class="muted">Pipes and agents use <code>kb</code>; engine project names and engine-specific commands do not leak into the workflow.</p></div>
+      <div class="card"><span class="metric">2 identities</span><strong>Producer event or content</strong><p class="muted">A producer event is keyed by <code>source + sourceId</code>. A manual add without producer identity falls back to the content hash.</p></div>
+      <div class="card"><span class="metric">2 outcomes</span><strong>Derived or raw-only</strong><p class="muted">A handoff completes with one or more cited Memories, or an explicit reason why no Memory was warranted.</p></div>
+      <div class="card"><span class="metric">0 semantic guesses</span><strong>KB verifies; the agent decides</strong><p class="muted">KB never claims to detect truth, ontology, contradictions, or semantic duplicates.</p></div>
     </div>
-    <p>The core outcome: a newcomer can now install the real runtime, create a real sample, target the intended KB, stop at the AI boundary, require the completion receipt, recover abandoned work, and verify only after the state transition is complete.</p>
+    <p>The first implementation slice is Ticket 1 from <code>docs/SPEC-MACHINE-SAFE-INGESTION.md</code>: machine-safe Add handoff v2. Read-only schema wrappers belong to Ticket 2 and only become useful after agents have produced a deliberately typed corpus.</p>
   </section>
 
-  <section aria-labelledby="intuition-title">
-    <h2 id="intuition-title">The intuition: onboarding is a state machine</h2>
-    <p>The previous pages described a sequence of commands as if they were prose. But the product has durable states: no runtime, no KB, a staged source, a pending agent handoff, a completed handoff, and an optional search upgrade. If the page skips one state, the user sees contradictions such as “Health: ok” while pending metadata still exists.</p>
-    <div class="flow" aria-label="Corrected onboarding state flow">
-      <span><b>1. Prerequisites</b>Bun and Git verified</span>
-      <span><b>2. Scaffold</b><code>kb new research</code></span>
-      <span><b>3. Stage</b>Source copied; handoff pending</span>
-      <span><b>4. Agent</b>Memory + index + exact <code>--complete</code></span>
-      <span><b>5. Receipt</b><code>Completed Add handoff</code></span>
-      <span><b>6. Verify</b>Status and search</span>
+  <section id="context" aria-labelledby="context-title">
+    <h2 id="context-title">Why this change exists</h2>
+    <p>A Screenpipe pipe can produce thousands of Markdown artifacts. Sending those files into one directory solves storage, but it does not answer the knowledge questions: Is this durable? Is it new? Does it update an existing Memory? Should one artifact become several Memories? What type is it?</p>
+    <p>The design therefore separates two kinds of work:</p>
+    <div class="grid">
+      <div class="card"><h3>Mechanical facts</h3><p>Readable input, exact bytes, SHA-256, producer identity, capture time, immutable raw storage, durable state, replay detection, and lineage checks are deterministic. KB owns them.</p></div>
+      <div class="card"><h3>Semantic judgment</h3><p>Create, update, split, merge, decline, title, summarize, tag, relate, and choose a meaningful type require context. The agent owns them.</p></div>
     </div>
-    <p>“Basic Memory” now appears only when the optional search engine matters. Before that, the user sees the concrete concept: kb’s <strong>structured markdown Memory format</strong>. Internal compatibility remains intact and the CLI’s global help calls the default format <strong>engine-compatible</strong>.</p>
+    <p>This is the central boundary: <strong>physical ingestion may be automatic; semantic filing must remain explicit.</strong></p>
   </section>
 
-  <section aria-labelledby="qa-title">
-    <h2 id="qa-title">What the 5 Monkeys found</h2>
+  <section id="intuition" aria-labelledby="intuition-title">
+    <h2 id="intuition-title">The intuition: a receiving dock with a claim check</h2>
+    <p>Think of <code>kb add</code> as a receiving dock. The dock accepts one sealed package, fingerprints it, stores it without alteration, and gives the producer a claim check. It does not open the package and reorganize the library by itself.</p>
+    <div class="flow" aria-label="Machine-safe ingestion lifecycle">
+      <div><b>1. Producer</b>Supplies one file or URL and, when available, an immutable event ID.</div>
+      <span class="arrow" aria-hidden="true">→</span>
+      <div><b>2. Stage</b>KB hashes bytes, stores raw content, and writes a pending receipt atomically.</div>
+      <span class="arrow" aria-hidden="true">→</span>
+      <div><b>3. Agent</b>Reads raw content plus existing Memories and chooses the semantic outcome.</div>
+      <span class="arrow" aria-hidden="true">→</span>
+      <div><b>4. Verify</b>KB checks source lineage, Memory paths, catalog entries, and completion consistency.</div>
+      <span class="arrow" aria-hidden="true">→</span>
+      <div><b>5. Complete</b>The durable receipt records <code>derived</code> or <code>raw-only</code>.</div>
+    </div>
+    <p>If the producer retries, the claim check makes the operation idempotent. If it reuses the same producer ID for different bytes, KB fails closed instead of guessing whether the input is a revision.</p>
+  </section>
+
+  <section id="architecture" aria-labelledby="architecture-title">
+    <h2 id="architecture-title">Architecture and state model</h2>
+    <h3>The public lifecycle</h3>
+    <pre><code># Stage exactly one producer event
+kb add report.md --source screenpipe --source-id artifact-123 \
+  --captured-at 2026-07-10T13:00:00Z --in work --json
+
+# Recover the same playbook later
+kb add --resume add-a1b2c3d4e5f60718293a4b5c --in work --json
+
+# Complete with one or more derivatives
+kb add --complete add-a1b2c3d4e5f60718293a4b5c \
+  --memory memories/daily-summary.md --in work --json
+
+# Or explicitly retain only the raw source
+kb add --complete add-a1b2c3d4e5f60718293a4b5c \
+  --no-memory --reason "No durable knowledge" --in work --json</code></pre>
+
+    <h3>Durable layers</h3>
     <table>
-      <thead><tr><th>Finding</th><th>Why it mattered</th><th>Disposition</th></tr></thead>
+      <thead><tr><th>Layer</th><th>Example</th><th>Authority</th></tr></thead>
       <tbody>
-        <tr><td>npm-only install</td><td>The launcher is <code>#!/usr/bin/env bun</code>; installation could succeed and execution fail.</td><td class="good">Fixed</td></tr>
-        <tr><td>Nonexistent sample</td><td>“Copy and run” assumed <code>~/Downloads/paper.pdf</code>.</td><td class="good">Fixed with a temporary sample</td></tr>
-        <tr><td>No real pause</td><td>Shell comments did not stop status/search from running before the AI handoff.</td><td class="good">Split into three phases</td></tr>
-        <tr><td>Missing completion receipt</td><td>Static transcripts omitted playbook step 8 and could claim healthy state too early.</td><td class="good">Full lifecycle shown</td></tr>
-        <tr><td>Unexplained “Basic Memory”</td><td>The name was overloaded as a note, format, and engine.</td><td class="good">Grounded at upgrade only</td></tr>
-        <tr><td>Abandoned-flow dead end</td><td>Retrying produced safe errors but no recovery explanation.</td><td class="good"><code>status</code> and <code>--resume</code> documented</td></tr>
-        <tr><td>History/focus divergence</td><td>Back/Forward changed the fragment while keyboard focus fell to the body.</td><td class="good">All six fragment headings focusable</td></tr>
-        <tr><td>Walkthrough cul-de-sac</td><td>The only focusable exit was an external repository link.</td><td class="good">Same-site setup links added</td></tr>
-        <tr><td>False copy success</td><td><code>execCommand</code> can return false without throwing.</td><td class="good">Failure says “Select text”</td></tr>
-        <tr><td>Implicit wrong-KB target</td><td>Current-directory resolution can beat the default KB.</td><td class="good">Tutorial uses <code>--in research</code></td></tr>
-        <tr><td>Git partial scaffold</td><td>A failed Git invocation leaves files before registration is complete.</td><td class="warn">Recovery documented; transaction fix deferred</td></tr>
+        <tr><td>Immutable evidence</td><td><code>raw/daily-abc123.md</code></td><td>Original captured bytes and full SHA-256.</td></tr>
+        <tr><td>Operational handoff</td><td><code>.kb/pending/add/&lt;id&gt;.json</code></td><td>Rebuildable pending/completed protocol state.</td></tr>
+        <tr><td>Durable knowledge</td><td><code>memories/daily-summary.md</code></td><td>Agent-authored semantic result with <code>source_refs</code>.</td></tr>
+        <tr><td>Human catalog</td><td><code>index.md</code>, <code>log.md</code></td><td>Memory catalog and append-only ingress/completion history.</td></tr>
+        <tr><td>Optional search index</td><td>Engine-owned database</td><td>Rebuildable acceleration, never the sole source of truth.</td></tr>
       </tbody>
     </table>
-    <p>Discarded exploration stayed discarded: theme/voice persistence, rapid-toggle timing, quiz animation, pixel/layout assertions, and making <code>kb new</code> silently idempotent.</p>
-  </section>
 
-  <section aria-labelledby="changes-title">
-    <h2 id="changes-title">What changed</h2>
-    <div class="grid">
-      <div class="card"><h3>Install truth</h3><p>Every beginner surface now installs Bun, exports its path, installs kb, verifies <code>kb --version</code>, and checks Git before creation. The short hero preview follows the same order.</p></div>
-      <div class="card"><h3>Deterministic targeting</h3><p>Setup, status, search, completion, and resume examples use <code>--in research</code>. A probe from inside another KB proved the source still landed in <code>research</code>.</p></div>
-      <div class="card"><h3>Explicit agent seam</h3><p>The runnable setup stops after <code>kb add</code>. A separate handoff message tells the AI to follow the complete playbook, run the generated completion command, and return the receipt.</p></div>
-      <div class="card"><h3>Recovery</h3><p>Existing-KB refusal is explained as safe. Pending work points to <code>--resume</code>. Git-failed scaffolds are initialized, re-run through <code>kb new</code> for registration, then checked with status.</p></div>
-      <div class="card"><h3>Accessible navigation</h3><p>One hash-focus helper handles direct links, clicks, and <code>hashchange</code>. All fragment section headings accept programmatic focus. The visual walkthrough has ordinary same-site anchors.</p></div>
-      <div class="card"><h3>Narrow contracts</h3><p>A new test file checks prerequisites, terminology boundaries, setup/handoff/verify ordering, hero install order, focusability, receipt ordering, and recovery tokens—without snapshotting visual layout.</p></div>
-    </div>
-  </section>
-
-  <section aria-labelledby="files-title">
-    <h2 id="files-title">Files and responsibilities</h2>
+    <h3>Identity is not content equality</h3>
     <table>
-      <thead><tr><th>Files</th><th>Responsibility</th></tr></thead>
+      <thead><tr><th>Situation</th><th>Required result</th><th>Why</th></tr></thead>
       <tbody>
-        <tr><td><code>README.md</code>, <code>docs/START-HERE.md</code>, <code>docs/WALKTHROUGH.md</code></td><td>Canonical beginner phases, handoff, completion, recovery, and grounded engine explanation.</td></tr>
-        <tr><td><code>site/index.html</code></td><td>Self-contained setup page, fragment focus, honest copy state, recovery UI, and current roadmap language.</td></tr>
-        <tr><td><code>site/walkthrough.html</code></td><td>Full worked receipt transcript, Bun/Git prerequisites, structured terminology, and same-site exits.</td></tr>
-        <tr><td><code>src/cli.ts</code>, <code>src/memory-format.ts</code></td><td>Deterministic <code>kb start</code>, complete Add help forms, recovery text, and beginner-facing format language.</td></tr>
-        <tr><td><code>test/onboarding-contract.test.ts</code>, <code>test/cli.test.ts</code></td><td>Stable public contracts rather than visual implementation details.</td></tr>
-        <tr><td><code>test/resilience.test.ts</code></td><td>Pins the Reflect fixture mtime so the existing business-logic test is independent of today’s clock.</td></tr>
-        <tr><td><code>implementation-notes.html</code></td><td>This self-contained explanation and pass-required quiz.</td></tr>
+        <tr><td>Same producer identity, same bytes</td><td>Return the existing handoff with <code>replayed: true</code>.</td><td>A retry must not duplicate raw data, logs, or work.</td></tr>
+        <tr><td>Same producer identity, different bytes</td><td>Exit <code>65</code>; mutate nothing.</td><td>A producer ID is an immutable event contract, not a mutable filename.</td></tr>
+        <tr><td>Same bytes, different producer identities</td><td>Create distinct ingress events.</td><td>Two capture events may have distinct provenance despite equal content.</td></tr>
+        <tr><td>Same normalized completion</td><td>Succeed as a replay.</td><td>Completion is idempotent after refs are normalized, deduplicated, and sorted.</td></tr>
+        <tr><td>Different completion for a completed handoff</td><td>Fail and preserve the first outcome.</td><td>Recorded history must not silently change.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Completion is verification, not authorship</h3>
+    <p>Before moving a handoff to completed state, KB verifies every declared Memory is under <code>memories/</code>, exists, is not an untouched TODO draft, cites the current raw ref in <code>source_refs</code>, and appears exactly once in <code>index.md</code>. KB does not inject the frontmatter or rewrite the Memory on the agent’s behalf.</p>
+
+    <details>
+      <summary>Why the JSON envelope matters</summary>
+      <p>A pipe needs one machine-readable result on a predictable channel. In JSON mode, success is exactly one compact object on stdout; controlled failure is exactly one compact object on stderr with stdout empty. The envelope includes the handoff ID, raw ref and hash, provenance, replay state, playbook, and exact next-command templates.</p>
+    </details>
+    <details>
+      <summary>Why schema work comes later</summary>
+      <p>Schema inference over unreviewed raw artifacts would infer the habits of the capture stream, not necessarily a useful knowledge model. Ticket 2 adds read-only <code>infer</code>, <code>validate</code>, and <code>diff</code> wrappers only after Ticket 1 creates a consistently typed, agent-reviewed corpus.</p>
+    </details>
+  </section>
+
+  <section id="change-map" aria-labelledby="change-map-title">
+    <h2 id="change-map-title">Expected change map</h2>
+    <p>This map explains responsibility boundaries. The integration owner should replace pending labels with exact final line/file receipts after all implementation lanes are merged.</p>
+    <table>
+      <thead><tr><th>Area</th><th>Expected responsibility</th><th>Final receipt</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/cli.ts</code></td><td>Parse stage/resume/complete forms; validate flags; choose text or JSON channels; preserve legacy forms; coordinate locks and state transitions.</td><td class="pending">[FINALIZE: exact symbols/lines]</td></tr>
+        <tr><td>Add handoff/state helpers</td><td>Canonical identity, full hashes, atomic pending/completed records, replay comparison, raw tamper checks, and legacy metadata decoding.</td><td class="pending">[FINALIZE: exact file(s)]</td></tr>
+        <tr><td>Memory/index verification</td><td>Normalize refs; enforce <code>memories/</code> containment, <code>source_refs</code>, non-TODO content, and exactly one catalog entry.</td><td class="pending">[FINALIZE: exact symbols/lines]</td></tr>
+        <tr><td>Logging and status</td><td>Append one ingress event per handoff, expose the stable handoff ID, and print the exact resume command without replay duplication.</td><td class="pending">[FINALIZE: exact symbols/lines]</td></tr>
+        <tr><td><code>test/cli.test.ts</code> and focused tests</td><td>Pin the public CLI contract: JSON shape/channels, exit codes, replay, collision, completion outcomes, compatibility, and no-ANSI text.</td><td class="pending">[FINALIZE: test names/counts]</td></tr>
+        <tr><td><code>test/resilience.test.ts</code> and concurrency tests</td><td>Prove atomic recovery, convergence under identical calls, tamper failure, and preservation of completed Markdown when engine refresh fails.</td><td class="pending">[FINALIZE: test names/counts]</td></tr>
+        <tr><td><code>implementation-notes.html</code></td><td>This self-contained context, architecture explanation, verification ledger, deviations log, and pass-required quiz.</td><td class="good">Present</td></tr>
       </tbody>
     </table>
   </section>
 
-  <section aria-labelledby="review-title">
-    <h2 id="review-title">Oracle and code review</h2>
-    <div class="card receipt"><h3>Oracle session: <code>review-onboarding-qa-plan</code></h3><p>The packx bundle contained the public pages, CLI/help code, tests, context language, and collated QA. Model selection was verified as GPT-5.6 Pro. Oracle kept all eight swarm findings, added explicit target selection and the Git prerequisite edge, and warned against a wizard, automatic completion, global internal renames, broad UI tests, or a scaffold transaction rewrite in this patch.</p></div>
-    <div class="card receipt"><h3>Two-axis review</h3><p><strong>Standards</strong> caught forbidden “prompt” vocabulary, a vague “standard format” name, and the risk of erasing the B0 compatibility distinction. <strong>Spec</strong> caught incomplete Git recovery, four non-focusable fragment headings, and the Bun-assuming hero preview. After corrections, both independent reviewers returned <strong>PASS</strong>.</p></div>
-    <p>The review’s duplicated-docs/shotgun-surgery observation is real but deferred. Generating five surfaces from one template would be a separate architecture change; the narrow contract tests now guard the stable lifecycle while that design remains open.</p>
-  </section>
-
-  <section aria-labelledby="verify-title">
-    <h2 id="verify-title">Verification receipts</h2>
+  <section aria-labelledby="behavior-title">
+    <h2 id="behavior-title">Behavioral contracts worth remembering</h2>
     <div class="grid">
-      <div class="card receipt"><h3>Focused contracts</h3><p><strong>75 passed, 0 failed</strong> across onboarding, CLI, and resilience files after review fixes.</p></div>
-      <div class="card receipt"><h3>Full suite</h3><p><strong>82 passed, 0 failed, 493 assertions</strong> with the repository's standard <code>bun test</code> command.</p></div>
-      <div class="card receipt"><h3>Real browser</h3><p>Direct <code>#hello</code>, <code>#core</code>, and <code>#honest</code> loads focused their headings. Back/Forward restored hello/quiz focus. Walkthrough navigation reached setup. Denied clipboard access produced “Select text.”</p></div>
-      <div class="card receipt"><h3>Executable targeting probe</h3><p>From inside a different KB: <code>research</code> received 1 raw source, the current <code>other</code> KB received 0, and status correctly showed one unfinished handoff.</p></div>
-      <div class="card receipt"><h3>Git recovery probes</h3><p>Missing Git exited 69 after a partial scaffold. With another KB already registered, <code>git init</code> + rerun <code>kb new research</code> printed <code>Recovered KB</code> and status became healthy.</p></div>
-      <div class="card receipt"><h3>Diff hygiene</h3><p><code>git diff --check</code> passed. The implementation commit touched only the planned onboarding/code/test paths. Pre-existing skill and workspace edits were not staged.</p></div>
+      <div class="card"><h3>One input at a time</h3><p>The command does not walk folders, expand globs, watch a filesystem, or own scheduling. A producer loops and checkpoints at its own boundary.</p></div>
+      <div class="card"><h3>Raw bytes never change</h3><p>The external source is untouched. The content-addressed raw copy is never overwritten, and resume/completion recompute its hash.</p></div>
+      <div class="card"><h3>Errors are contracts</h3><p><code>64</code> means invalid use or refs. <code>65</code> means bad/colliding/tampered state. <code>69</code> means optional engine failure after durable semantic work.</p></div>
+      <div class="card"><h3>Legacy survives migration</h3><p>Existing human-oriented Add flows, legacy pending records, a unique legacy raw-ref resume, and positional completion remain supported for one compatibility release.</p></div>
+      <div class="card"><h3>Lineage is explicit</h3><p>Every derivative carries its raw ref in <code>source_refs</code>. Updating a Memory appends lineage; it never erases prior source refs.</p></div>
+      <div class="card"><h3>Schema remains advisory</h3><p>Inference may propose a schema later. It never silently installs one or moves validation from warning to strict.</p></div>
     </div>
   </section>
 
-  <section aria-labelledby="deviations-title">
-    <h2 id="deviations-title">Deviations and conservative choices</h2>
-    <div class="card deviation"><h3>Git recovery needed two registry states</h3><p>The first isolated reproduction had no registry, so scan reconstruction made the retry return the safe “KB already exists” refusal. Spec review identified the missing state: with another KB already registered, the partial scaffold is invisible until <code>kb new research</code> is rerun, which prints <code>Recovered KB</code>. Final guidance covers both results, then continues to status.</p></div>
-    <div class="card deviation"><h3>Reflect test clock</h3><p>The full suite exposed an existing date-dependent fixture whose hard-coded “now” had become earlier than the file created by the test. The fixture mtime is now pinned one hour before its test clock. No Reflect production logic changed.</p></div>
-    <div class="card deviation"><h3>Git transaction remains deferred</h3><p>The CLI still writes scaffold files before Git initialization and can temporarily consider that folder complete. Fixing transaction/recovery semantics is a separate business-logic change; this patch documents a verified recovery path without weakening validation or widening scope.</p></div>
+  <section id="verification" aria-labelledby="verification-title">
+    <h2 id="verification-title">Verification ledger</h2>
+    <p class="pending">This section is intentionally honest: implementation work is still converging. Replace every bracketed item with an exact command and observed result before declaring the overall goal complete.</p>
+    <div class="grid">
+      <div class="card placeholder"><h3>Focused Add contract</h3><p><code>[FINALIZE: command]</code></p><p><strong>[FINALIZE: passed/failed count]</strong></p></div>
+      <div class="card placeholder"><h3>Concurrency and recovery</h3><p><code>[FINALIZE: command]</code></p><p><strong>[FINALIZE: convergence/recovery evidence]</strong></p></div>
+      <div class="card placeholder"><h3>Full suite</h3><p><code>bun test</code></p><p><strong>[FINALIZE: passed/failed/assertion count]</strong></p></div>
+      <div class="card placeholder"><h3>Type/static checks</h3><p><code>[FINALIZE: repository command]</code></p><p><strong>[FINALIZE: observed result]</strong></p></div>
+      <div class="card placeholder"><h3>Real CLI smoke</h3><p><code>[FINALIZE: isolated-home stage → resume → complete commands]</code></p><p><strong>[FINALIZE: receipts and filesystem evidence]</strong></p></div>
+      <div class="card placeholder"><h3>Diff hygiene</h3><p><code>git diff --check</code></p><p><strong>[FINALIZE: observed result and scoped file list]</strong></p></div>
+    </div>
+    <h3>Requirement-to-evidence checklist</h3>
+    <table>
+      <thead><tr><th>Requirement</th><th>Strong evidence required</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Stable stage and replay</td><td>Exact JSON assertions plus filesystem/log counts before and after replay.</td><td class="pending">Pending final receipt</td></tr>
+        <tr><td>Collision and tamper safety</td><td>Exit <code>65</code>, empty success channel, and a before/after proof of no mutation.</td><td class="pending">Pending final receipt</td></tr>
+        <tr><td>Concurrent convergence</td><td>Parallel public-CLI calls yielding one creator, replay receipts, and one durable event.</td><td class="pending">Pending final receipt</td></tr>
+        <tr><td>Derived completion validation</td><td>Positive multi-Memory case plus missing lineage, missing/duplicate index, TODO, traversal, and conflict negatives.</td><td class="pending">Pending final receipt</td></tr>
+        <tr><td>Raw-only completion</td><td>Required bounded reason, preserved raw bytes, completion receipt, equivalent replay, and conflicting-replay failure.</td><td class="pending">Pending final receipt</td></tr>
+        <tr><td>Compatibility</td><td>Legacy pending decode, unique raw-ref resume, positional completion, and existing human Add tests.</td><td class="pending">Pending final receipt</td></tr>
+      </tbody>
+    </table>
   </section>
 
-  <section aria-labelledby="preserve-title">
-    <h2 id="preserve-title">What was preserved</h2>
+  <section id="deviations" aria-labelledby="deviations-title">
+    <p class="eyebrow">Required running log</p>
+    <h2 id="deviations-title">Deviations</h2>
+    <div class="card deviation">
+      <h3>Engine fallback is pinned to Basic Memory 0.22.1</h3>
+      <p>The specification called for repairing the runner so a successful <code>uvx</code> availability check uses the same persistent command prefix, but it did not require a version pin. The conservative implementation uses <code>uvx --from basic-memory==0.22.1 bm</code> instead of an unversioned fallback. A directly installed <code>bm</code> executable is still preferred when present.</p>
+      <p><strong>Why:</strong> this prevents an upstream release from changing the schema/search contract underneath KB and matches repository contract tests that already pin version 0.22.1. The tradeoff is deliberate upgrade work later rather than surprise drift now.</p>
+    </div>
+    <div class="card deviation">
+      <h3>Automatic schema drafting remains deferred</h3>
+      <p>Ticket 3 described <code>kb schema infer &lt;type&gt; --draft</code> as possible follow-on work, not a required first contract. The integrated CLI rejects <code>--draft</code> with an explicit deferred message. It does implement the merge-critical part repeated across Tickets 1 and 3: a completed B1 handoff survives refresh failure, leaves <code>.kb/engine-dirty</code>, and the next Engine-backed command repairs it.</p>
+      <p><strong>Why:</strong> writing a schema automatically would cross the agent-judgment boundary. The conservative choice keeps inference and drift read-only while preserving durable Markdown when the rebuildable index is unavailable.</p>
+    </div>
+    <div class="card deviation">
+      <h3>Type checking uses an isolated modern compiler</h3>
+      <p>The repository has no typecheck script, and its ambient TypeScript 4.7.4 cannot understand the installed Bun declarations. Verification therefore pins TypeScript 5.9.3 through <code>bunx --bun --package typescript@5.9.3 tsc</code> and checks the production source files with Bun-compatible module resolution.</p>
+      <p><strong>Why:</strong> treating the known-stale ambient compiler as authoritative would create a false failure. Pinning the verifier is reproducible and does not add a runtime dependency or modify the package manifest.</p>
+    </div>
+    <div class="card deviation">
+      <h3>Report-only conservative choice: remove stale onboarding claims</h3>
+      <p>The previous <code>implementation-notes.html</code> described a different onboarding repair and claimed completed test/browser receipts unrelated to this spec. Its useful self-contained layout and accessible quiz pattern were preserved, but its claims were replaced so this report cannot be mistaken for evidence about machine-safe ingestion.</p>
+    </div>
+    <details>
+      <summary>Template for a later deviation</summary>
+      <p><strong>Observed edge:</strong> [exact evidence] · <strong>Planned behavior:</strong> [spec reference] · <strong>Conservative choice:</strong> [what was done] · <strong>Why:</strong> [invariant protected] · <strong>Verification:</strong> [test/receipt]</p>
+    </details>
+  </section>
+
+  <section aria-labelledby="deferred-title">
+    <h2 id="deferred-title">What this change does not promise</h2>
     <ul>
-      <li><code>kb start</code> remains deterministic, read-only, text-only, and non-interactive.</li>
-      <li>The Basic Memory file-format compatibility contract and engine-specific names remain intact internally and at engine boundaries.</li>
-      <li><code>kb new</code> still refuses duplicates; no silent idempotency or automatic recovery was added.</li>
-      <li><code>kb add --complete</code> remains an explicit validated receipt; nothing auto-completes pending work.</li>
-      <li>No dependency, router, DOM library, visual snapshot, animation test, theme persistence, or timing test was added.</li>
-      <li>Pre-existing changes under <code>.agents/</code>, <code>skills-lock.json</code>, <code>.scratch/</code>, <code>agent/</code>, and <code>tickets.md</code> were not modified or staged by this work.</li>
+      <li>No directory ingestion, watcher, daemon, scheduler, or bulk migration of the existing thousands.</li>
+      <li>No automatic semantic routing, schema adoption, Memory authoring, deduplication, contradiction detection, or truth guarantee.</li>
+      <li>No rewriting raw artifacts to add metadata and no second schema registry owned by KB.</li>
+      <li>No public engine project flags or cloud routing.</li>
+      <li>No claim that schema inference can replace representative sampling and agent review.</li>
     </ul>
+    <p>A future legacy migration should begin with roughly 20–50 representative artifacts. That sample establishes useful types and realistic review throughput before anyone specifies a checkpointed bulk importer.</p>
   </section>
 
   <section id="quiz" aria-labelledby="quiz-title">
     <p class="eyebrow">Required checkpoint</p>
-    <h2 id="quiz-title">Pass the change quiz</h2>
-    <p>You must score <strong>7/7</strong>. The result explains what to revisit; submit again until you pass.</p>
+    <h2 id="quiz-title">Pass the implementation quiz</h2>
+    <p>Answer every question and score <strong>10/10</strong>. After submission, each missed answer explains the relevant contract. Retry until the result says <strong>PASS</strong>.</p>
     <form id="knowledgeQuiz">
-      <fieldset><legend>1. Why is Basic Memory introduced only in the upgrade section?</legend>
-        <label class="choice"><input type="radio" name="q1" value="a"> Because it is the optional search engine identity, not required beginner vocabulary.</label>
-        <label class="choice"><input type="radio" name="q1" value="b"> Because the format stopped being compatible with it.</label>
-        <label class="choice"><input type="radio" name="q1" value="c"> Because kb now contains its own AI.</label>
+      <fieldset data-question="q1"><legend>1. What does machine-safe ingestion deliberately avoid deciding?</legend>
+        <label class="choice"><input type="radio" name="q1" value="a"> Whether the source bytes match their stored SHA-256.</label>
+        <label class="choice"><input type="radio" name="q1" value="b"> Whether to create, update, split, merge, or decline a Memory.</label>
+        <label class="choice"><input type="radio" name="q1" value="c"> Whether a producer replay used the same source ID.</label>
+        <p class="feedback" aria-live="polite"></p>
       </fieldset>
-      <fieldset><legend>2. Why do tutorial commands use <code>--in research</code>?</legend>
-        <label class="choice"><input type="radio" name="q2" value="a"> It makes commands faster.</label>
-        <label class="choice"><input type="radio" name="q2" value="b"> The current-directory KB can otherwise win target resolution.</label>
-        <label class="choice"><input type="radio" name="q2" value="c"> It creates the Registry.</label>
+      <fieldset data-question="q2"><legend>2. What happens when the same producer identity arrives with different bytes?</legend>
+        <label class="choice"><input type="radio" name="q2" value="a"> KB treats it as a revision and overwrites the raw file.</label>
+        <label class="choice"><input type="radio" name="q2" value="b"> KB creates a second ingress event automatically.</label>
+        <label class="choice"><input type="radio" name="q2" value="c"> KB exits with a data error and performs no mutation.</label>
+        <p class="feedback" aria-live="polite"></p>
       </fieldset>
-      <fieldset><legend>3. When should the user run status and search?</legend>
-        <label class="choice"><input type="radio" name="q3" value="a"> Immediately after <code>kb add</code>.</label>
-        <label class="choice"><input type="radio" name="q3" value="b"> Before the AI writes anything.</label>
-        <label class="choice"><input type="radio" name="q3" value="c"> After the AI returns the <code>Completed Add handoff</code> receipt.</label>
+      <fieldset data-question="q3"><legend>3. Why can identical bytes under different producer IDs create separate events?</legend>
+        <label class="choice"><input type="radio" name="q3" value="a"> Provenance belongs to the capture event, not only the content hash.</label>
+        <label class="choice"><input type="radio" name="q3" value="b"> Content hashes are nondeterministic.</label>
+        <label class="choice"><input type="radio" name="q3" value="c"> KB wants duplicate catalog entries.</label>
+        <p class="feedback" aria-live="polite"></p>
       </fieldset>
-      <fieldset><legend>4. What is the verified Git-failure recovery?</legend>
-        <label class="choice"><input type="radio" name="q4" value="a"> Delete the KB and start over.</label>
-        <label class="choice"><input type="radio" name="q4" value="b"> Initialize Git, rerun <code>kb new research</code> to register/recover, then check status.</label>
-        <label class="choice"><input type="radio" name="q4" value="c"> Enable Basic Memory.</label>
+      <fieldset data-question="q4"><legend>4. Which file is authoritative semantic knowledge?</legend>
+        <label class="choice"><input type="radio" name="q4" value="a"> The pending JSON receipt.</label>
+        <label class="choice"><input type="radio" name="q4" value="b"> The agent-authored Memory with explicit lineage.</label>
+        <label class="choice"><input type="radio" name="q4" value="c"> The optional engine database.</label>
+        <p class="feedback" aria-live="polite"></p>
       </fieldset>
-      <fieldset><legend>5. What should the Copy button say when copying returns false?</legend>
-        <label class="choice"><input type="radio" name="q5" value="a"> Copied</label>
-        <label class="choice"><input type="radio" name="q5" value="b"> Select text</label>
-        <label class="choice"><input type="radio" name="q5" value="c"> Try later</label>
+      <fieldset data-question="q5"><legend>5. What must every derived Memory include before completion?</legend>
+        <label class="choice"><input type="radio" name="q5" value="a"> The current raw ref in <code>source_refs</code>.</label>
+        <label class="choice"><input type="radio" name="q5" value="b"> A strict inferred schema.</label>
+        <label class="choice"><input type="radio" name="q5" value="c"> The producer’s entire raw body copied into frontmatter.</label>
+        <p class="feedback" aria-live="polite"></p>
       </fieldset>
-      <fieldset><legend>6. Which events restore fragment focus?</legend>
-        <label class="choice"><input type="radio" name="q6" value="a"> Only mouse clicks.</label>
-        <label class="choice"><input type="radio" name="q6" value="b"> Initial hashed load, internal activation, and hash changes such as Back/Forward.</label>
-        <label class="choice"><input type="radio" name="q6" value="c"> Theme toggles.</label>
+      <fieldset data-question="q6"><legend>6. What is a valid completion when no durable Memory is warranted?</legend>
+        <label class="choice"><input type="radio" name="q6" value="a"> Delete the raw source and pending record.</label>
+        <label class="choice"><input type="radio" name="q6" value="b"> Leave the handoff pending forever.</label>
+        <label class="choice"><input type="radio" name="q6" value="c"> Complete raw-only with an explicit bounded reason.</label>
+        <p class="feedback" aria-live="polite"></p>
       </fieldset>
-      <fieldset><legend>7. What was deliberately not changed?</legend>
-        <label class="choice"><input type="radio" name="q7" value="a"> The Add help forms.</label>
-        <label class="choice"><input type="radio" name="q7" value="b"> The beginner terminology.</label>
-        <label class="choice"><input type="radio" name="q7" value="c"> Scaffold transaction semantics and automatic completion behavior.</label>
+      <fieldset data-question="q7"><legend>7. Why are schema wrappers delivered after Add handoff v2?</legend>
+        <label class="choice"><input type="radio" name="q7" value="a"> Schema inference needs an agent-reviewed, deliberately typed corpus to be useful.</label>
+        <label class="choice"><input type="radio" name="q7" value="b"> The engine can safely infer meaning from raw artifacts only after a timer expires.</label>
+        <label class="choice"><input type="radio" name="q7" value="c"> Schema commands are intended to mutate raw files.</label>
+        <p class="feedback" aria-live="polite"></p>
       </fieldset>
-      <button type="submit">Check my score</button><span id="quizResult" role="status" aria-live="polite"></span>
+      <fieldset data-question="q8"><legend>8. What should an equivalent repeated completion do?</legend>
+        <label class="choice"><input type="radio" name="q8" value="a"> Fail because a handoff can only be mentioned once.</label>
+        <label class="choice"><input type="radio" name="q8" value="b"> Succeed with <code>replayed: true</code>.</label>
+        <label class="choice"><input type="radio" name="q8" value="c"> Append another completion log entry.</label>
+        <p class="feedback" aria-live="polite"></p>
+      </fieldset>
+      <fieldset data-question="q9"><legend>9. Who writes or rewrites the Memory during completion?</legend>
+        <label class="choice"><input type="radio" name="q9" value="a"> KB, after guessing a title and type.</label>
+        <label class="choice"><input type="radio" name="q9" value="b"> The optional engine.</label>
+        <label class="choice"><input type="radio" name="q9" value="c"> The agent; KB only validates the declared result.</label>
+        <p class="feedback" aria-live="polite"></p>
+      </fieldset>
+      <fieldset data-question="q10"><legend>10. Which scope is explicitly deferred?</legend>
+        <label class="choice"><input type="radio" name="q10" value="a"> Stable JSON receipts for one artifact.</label>
+        <label class="choice"><input type="radio" name="q10" value="b"> Directory watching and bulk migration of thousands of artifacts.</label>
+        <label class="choice"><input type="radio" name="q10" value="c"> Producer-ID collision detection.</label>
+        <p class="feedback" aria-live="polite"></p>
+      </fieldset>
+      <button type="submit">Check my understanding</button>
+      <div id="quizResult" role="status" aria-live="polite">Not attempted yet.</div>
     </form>
-    <details><summary>Answer explanations</summary><ol><li>Basic Memory is named where the optional engine identity matters; the basic files stay compatible.</li><li>Target resolution prefers a containing KB, so explicit targeting makes copied instructions deterministic.</li><li>The receipt is the state transition from pending to complete.</li><li>Git initialization repairs the repo; rerunning <code>kb new</code> registers or safely recognizes the existing scaffold.</li><li>False success is worse than honest manual recovery.</li><li>The helper covers direct entry and browser history, not only click handlers.</li><li>This patch documents the Git edge but does not rewrite scaffold transactions or infer completion.</li></ol></details>
   </section>
 
-  <footer>Self-contained report. No external scripts, fonts, or network resources.</footer>
+  <footer>Self-contained report. No external scripts, fonts, or network resources. Final implementation receipts must replace all <code>[FINALIZE: ...]</code> placeholders before the parent goal is marked complete.</footer>
 </main>
 <script>
-  (function(){
-    var form=document.getElementById("knowledgeQuiz");
-    var result=document.getElementById("quizResult");
-    var answers={q1:"a",q2:"b",q3:"c",q4:"b",q5:"b",q6:"b",q7:"c"};
-    form.addEventListener("submit",function(event){
+  (function () {
+    "use strict";
+    var form = document.getElementById("knowledgeQuiz");
+    var result = document.getElementById("quizResult");
+    var answers = {
+      q1: { value: "b", explanation: "KB owns deterministic ingestion facts. The agent decides whether and how durable Memory should change." },
+      q2: { value: "c", explanation: "A producer ID represents one immutable event. Different bytes are a contract collision, so KB exits 65 and mutates nothing." },
+      q3: { value: "a", explanation: "Equal content does not erase event provenance. Different producer IDs may represent distinct captures." },
+      q4: { value: "b", explanation: "Memories are authoritative semantic knowledge. Receipts and engine indexes are rebuildable operational state." },
+      q5: { value: "a", explanation: "Every derivative must explicitly cite the immutable raw source in source_refs; KB verifies but does not inject it." },
+      q6: { value: "c", explanation: "Raw-only is a first-class outcome. It preserves evidence and records why no derivative was warranted." },
+      q7: { value: "a", explanation: "Inferring structure from unreviewed raw captures models the capture stream. Typed, reviewed Memories provide the useful corpus." },
+      q8: { value: "b", explanation: "Equivalent completion is idempotent. A conflicting completion fails and preserves the original outcome." },
+      q9: { value: "c", explanation: "The agent authors semantic content. KB validates paths, lineage, content, and catalog membership at completion." },
+      q10: { value: "b", explanation: "This slice accepts exactly one input. Watchers, recursive ingestion, and bulk migration remain separate future work." }
+    };
+
+    form.addEventListener("submit", function (event) {
       event.preventDefault();
-      var data=new FormData(form);var score=0;var missing=[];
-      Object.keys(answers).forEach(function(key){var value=data.get(key);if(value===null)missing.push(key.slice(1));if(value===answers[key])score+=1;});
-      if(missing.length){result.textContent="Answer every question. Missing: "+missing.join(", ")+".";result.className="warn";return;}
-      if(score===7){result.textContent="PASS — 7/7. You understand the change.";result.className="good";}
-      else{result.textContent="Not yet — "+score+"/7. Review the explanations and retry; passing requires 7/7.";result.className="warn";}
+      var data = new FormData(form);
+      var keys = Object.keys(answers);
+      var score = 0;
+      var missing = 0;
+
+      keys.forEach(function (key) {
+        var selected = data.get(key);
+        var fieldset = form.querySelector('[data-question="' + key + '"]');
+        var feedback = fieldset.querySelector(".feedback");
+        fieldset.classList.remove("correct", "incorrect");
+
+        if (selected === null) {
+          missing += 1;
+          fieldset.classList.add("incorrect");
+          feedback.className = "feedback bad";
+          feedback.textContent = "Not answered. " + answers[key].explanation;
+        } else if (selected === answers[key].value) {
+          score += 1;
+          fieldset.classList.add("correct");
+          feedback.className = "feedback good";
+          feedback.textContent = "Correct. " + answers[key].explanation;
+        } else {
+          fieldset.classList.add("incorrect");
+          feedback.className = "feedback bad";
+          feedback.textContent = "Not quite. " + answers[key].explanation;
+        }
+      });
+
+      if (missing > 0) {
+        result.className = "bad";
+        result.textContent = "Not yet — answer all 10 questions. " + missing + " still missing; current score " + score + "/10.";
+      } else if (score === 10) {
+        result.className = "good";
+        result.textContent = "PASS — " + score + "/10. You understand the machine-safe ingestion contract.";
+      } else {
+        result.className = "bad";
+        result.textContent = "Not yet — " + score + "/10. Passing requires 10/10. Read the explanations beside missed answers and retry.";
+      }
+
+      result.scrollIntoView({ behavior: "smooth", block: "center" });
     });
   }());
 </script>

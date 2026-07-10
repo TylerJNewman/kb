@@ -1,0 +1,16 @@
+{
+  "results": [
+    {
+      "title": "Index",
+      "file_path": "index.md",
+      "matched_chunk": "noise",
+      "score": 1
+    },
+    {
+      "title": "Meeting",
+      "file_path": "memories/meeting.md",
+      "matched_chunk": "fact",
+      "score": 0.8
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "note_type": "meeting",
+  "total_notes": 1,
+  "total_entities": 1,
+  "valid_count": 1,
+  "warning_count": 1,
+  "error_count": 0,
+  "results": [
+    {
+      "note_identifier": "meetings/launch.md",
+      "schema_entity": "meeting",
+      "passed": true,
+      "field_results": [
+        {
+          "field_name": "summary",
+          "field_type": "string",
+          "required": true,
+          "status": "present",
+          "values": ["Discussed launch timing"],
+          "message": null
+        }
+      ],
+      "unmatched_observations": {
+        "decision": 1
+      },
+      "unmatched_relations": [],
+      "warnings": ["Unmatched observation category: decision"],
+      "errors": []
+    }
+  ]
+}

@@ -164,7 +164,7 @@ Line format:
 async function writeEngineStubs(): Promise<void> {
   await harness.writeFakeExecutable(
     "bm",
-    "#!/bin/sh\nif [ \"$1\" = \"project\" ]; then exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then exit 0; fi\nexit 2\n",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"list\" ]; then echo '{\"projects\":[]}'; exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"add\" ]; then exit 0; fi\nif [ \"$1\" = \"reindex\" ]; then exit 0; fi\nexit 2\n",
   );
 }
 

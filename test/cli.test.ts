@@ -30,7 +30,8 @@ test("kb --help exits 0 and writes the golden help surface to stdout", async () 
   expect(result.stdout).toContain("Add:");
   expect(result.stdout).toContain("Ask:");
   expect(result.stdout).toContain("Maintain:");
-  expect(result.stdout).toContain("enable search  Enable Basic Memory search over existing files.");
+  expect(result.stdout).toContain("enable search  Enable local search and schema tooling over existing files.");
+  expect(result.stdout).toContain("schema         Infer, validate, or inspect drift in Memory schemas.");
   expect(result.stdout).toContain("Targeting:");
   expect(result.stdout).toContain("Start with: kb start");
   expect(result.stdout).toContain("kb start prints the first-run path");
@@ -164,7 +165,10 @@ test("kb add --help exposes stage, resume, and completion forms", async () => {
 
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
-  expect(result.stdout).toContain("kb add <file-or-url> [--in <name>]");
+  expect(result.stdout).toContain("kb add <file-or-url> [--source <producer> --source-id <id>]");
+  expect(result.stdout).toContain("kb add --resume <handoff-id> [--json] [--in <name>]");
+  expect(result.stdout).toContain("kb add --complete <handoff-id> --memory <memories/ref.md>");
+  expect(result.stdout).toContain("kb add --complete <handoff-id> --no-memory --reason <single-line-reason>");
   expect(result.stdout).toContain("kb add --resume <raw-ref> [--in <name>]");
   expect(result.stdout).toContain("kb add --complete <raw-ref> <memory-ref> [--in <name>]");
   expect(result.stdout).toContain("normally runs --complete");
@@ -543,25 +547,434 @@ test("kb add <file> stages raw source unchanged, logs ingest, and prints the ing
   expect(rawFiles[0]).toMatch(/^source-[a-f0-9]{12}\.md$/);
   expect(await readFile(join(kbDir, "raw", rawFiles[0]), "utf8")).toBe(sourceText);
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain(`add | ${rawFiles[0]}`);
-  expect(result.stdout).toBe(`Add playbook
-Raw source: raw/${rawFiles[0]}
-Memory target: memories/source.md
-URL behavior: local file copied verbatim into raw/.
+  const handoffId = /^Handoff ID: (add-[a-f0-9]{24})$/m.exec(result.stdout)?.[1];
+  expect(handoffId).toBeDefined();
+  expect(result.stdout).toContain(`Raw source: raw/${rawFiles[0]}`);
+  expect(result.stdout).toContain("Suggested Memory target: memories/source.md");
+  expect(result.stdout).toContain(`Read raw/${rawFiles[0]} without modifying it.`);
+  expect(result.stdout).toContain(`- [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>`);
+  expect(result.stdout).toContain(`kb add --complete ${handoffId} --memory <memories/ref.md> --in research`);
+  expect(result.stdout).toContain(`kb add --resume ${handoffId} --in research`);
+});
 
-Agent half:
-1. Read raw/${rawFiles[0]} without editing it.
-2. Check memories/ and index.md for an existing Memory on this subject first.
-3. Write memories/source.md in kb's structured markdown Memory format.
-4. Include an executive summary of about 150 words or less.
-5. Extract observations as "- [category] fact #tag".
-6. Extract relations as "- relates_to [[Target]]".
-7. Add or update one index.md line: - [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>
-8. When the Memory exists and its index.md line is present, run:
-   kb add --complete raw/${rawFiles[0]} memories/source.md --in research
+test("kb add stages one producer event as a stable JSON handoff and replays it without mutation", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "daily.md");
+  const sourceText = "# Daily\n\nA durable fact.\n";
+  const capturedAt = "2026-07-10T13:00:00-07:00";
+  const ingestedAt = "2026-07-10T21:32:19.000Z";
+  await writeFile(source, sourceText);
 
-If this output is lost, run:
-  kb add --resume raw/${rawFiles[0]} --in research
-`);
+  const args = [
+    "add",
+    source,
+    "--source",
+    "screenpipe",
+    "--source-id",
+    "artifact-123",
+    "--captured-at",
+    capturedAt,
+    "--json",
+    "--in",
+    "research",
+  ];
+  const first = await harness.run("kb", args, { env: { KB_NOW: ingestedAt } });
+  const kbDir = join(harness.home, "kb", "research");
+  const rawSha256 = createHash("sha256").update(sourceText).digest("hex");
+  const identity = createHash("sha256")
+    .update("kb-add-v1\0screenpipe\0artifact-123")
+    .digest("hex");
+  const handoffId = `add-${identity.slice(0, 24)}`;
+  const rawRef = `raw/daily-${rawSha256.slice(0, 12)}.md`;
+  const receipt = JSON.parse(first.stdout) as Record<string, unknown>;
+
+  expect(first.code).toBe(0);
+  expect(first.stderr).toBe("");
+  expect(first.stdout.endsWith("\n")).toBe(true);
+  expect(first.stdout.trim().split("\n")).toHaveLength(1);
+  expect(receipt).toEqual({
+    schemaVersion: 1,
+    ok: true,
+    command: "add",
+    kb: { name: "research", path: kbDir },
+    result: {
+      state: "pending",
+      replayed: false,
+      handoffId,
+      raw: { ref: rawRef, sha256: rawSha256, created: true },
+      provenance: {
+        source: "screenpipe",
+        sourceId: "artifact-123",
+        capturedAt: "2026-07-10T20:00:00.000Z",
+        ingestedAt,
+      },
+      suggestedMemoryRef: "memories/daily.md",
+      requiresAgent: true,
+      resumeCommand: `kb add --resume ${handoffId} --in research`,
+      completeCommandTemplate: `kb add --complete ${handoffId} --memory <memories/ref.md> --in research`,
+      playbook: expect.stringContaining(`Handoff ID: ${handoffId}`),
+    },
+  });
+  expect(await readFile(source, "utf8")).toBe(sourceText);
+  expect(await readFile(join(kbDir, rawRef), "utf8")).toBe(sourceText);
+  expect(JSON.parse(await readFile(join(kbDir, ".kb", "pending", "add", `${handoffId}.json`), "utf8"))).toMatchObject({
+    schemaVersion: 2,
+    kind: "add",
+    handoffId,
+    identitySha256: identity,
+    state: "pending",
+    rawRef,
+    rawSha256,
+    source: { name: "screenpipe", id: "artifact-123", capturedAt: "2026-07-10T20:00:00.000Z" },
+  });
+
+  const beforeReplay = await snapshotKbFiles(kbDir);
+  const replay = await harness.run("kb", args, { env: { KB_NOW: "2026-07-10T22:00:00.000Z" } });
+
+  expect(replay.code).toBe(0);
+  expect(replay.stderr).toBe("");
+  expect(JSON.parse(replay.stdout)).toEqual({
+    ...receipt,
+    result: {
+      ...(receipt.result as Record<string, unknown>),
+      replayed: true,
+      raw: { ref: rawRef, sha256: rawSha256, created: false },
+    },
+  });
+  expect(await snapshotKbFiles(kbDir)).toEqual(beforeReplay);
+  expect((await readFile(join(kbDir, "log.md"), "utf8")).match(new RegExp(handoffId, "g"))).toHaveLength(1);
+});
+
+test("kb add fails closed on a reused producer ID with different bytes but permits distinct producer events", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "daily.md");
+  await writeFile(source, "version one\n");
+  const baseArgs = ["add", source, "--source", "screenpipe", "--source-id", "artifact-123", "--json", "--in", "research"];
+  const first = await harness.runKb(baseArgs);
+  expect(first.code).toBe(0);
+  const kbDir = join(harness.home, "kb", "research");
+
+  await writeFile(source, "version two\n");
+  const beforeConflict = await snapshotKbFiles(kbDir);
+  const conflict = await harness.runKb(baseArgs);
+
+  expect(conflict).toEqual({
+    code: 65,
+    stdout: "",
+    stderr: `${JSON.stringify({
+      schemaVersion: 1,
+      ok: false,
+      command: "add",
+      error: {
+        code: "SOURCE_ID_CONFLICT",
+        message: "source screenpipe/artifact-123 was previously recorded with different bytes",
+      },
+    })}\n`,
+  });
+  expect(await snapshotKbFiles(kbDir)).toEqual(beforeConflict);
+
+  await writeFile(source, "version one\n");
+  const distinct = await harness.runKb([
+    "add", source, "--source", "screenpipe", "--source-id", "artifact-456", "--json", "--in", "research",
+  ]);
+  expect(distinct.code).toBe(0);
+  expect(JSON.parse(distinct.stdout).result).toMatchObject({ replayed: false, raw: { created: false } });
+  expect((await readdir(join(kbDir, ".kb", "pending", "add"))).filter((name) => name.endsWith(".json"))).toHaveLength(2);
+  expect((await readFile(join(kbDir, "log.md"), "utf8")).match(/add-ingress/g)).toHaveLength(2);
+});
+
+test("kb add validates producer identity and captured time before mutation", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "source.md");
+  await writeFile(source, "source\n");
+  const cases: Array<{ args: string[]; code: string }> = [
+    { args: ["--source", "screenpipe"], code: "INVALID_PROVENANCE" },
+    { args: ["--source-id", "artifact-1"], code: "INVALID_PROVENANCE" },
+    { args: ["--source", "bad/source", "--source-id", "artifact-1"], code: "INVALID_SOURCE" },
+    { args: ["--source", "screenpipe", "--source-id", "line one\nline two"], code: "INVALID_SOURCE_ID" },
+    { args: ["--captured-at", "2026-07-10 13:00"], code: "INVALID_CAPTURED_AT" },
+  ];
+  const kbDir = join(harness.home, "kb", "research");
+  const before = await snapshotKbFiles(kbDir);
+
+  for (const item of cases) {
+    const result = await harness.runKb(["add", source, ...item.args, "--json", "--in", "research"]);
+    expect(result.code).toBe(64);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, command: "add", error: { code: item.code } });
+  }
+  expect(await snapshotKbFiles(kbDir)).toEqual(before);
+});
+
+test("concurrent identical kb add calls converge on one ingress event", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "capture.md");
+  await writeFile(source, "capture\n");
+  const args = [
+    "add", source, "--source", "screenpipe", "--source-id", "concurrent-1", "--json", "--in", "research",
+  ];
+
+  const results = await Promise.all(Array.from({ length: 6 }, () => harness.runKb(args)));
+  const receipts = results.map((result) => JSON.parse(result.stdout));
+  const kbDir = join(harness.home, "kb", "research");
+
+  expect(results.every((result) => result.code === 0 && result.stderr === "")).toBe(true);
+  expect(new Set(receipts.map((receipt) => receipt.result.handoffId))).toHaveLength(1);
+  expect(receipts.filter((receipt) => receipt.result.raw.created === true)).toHaveLength(1);
+  expect(receipts.filter((receipt) => receipt.result.replayed === true)).toHaveLength(5);
+  expect(await readdir(join(kbDir, "raw"))).toHaveLength(1);
+  expect(await readdir(join(kbDir, ".kb", "pending", "add"))).toHaveLength(1);
+  expect((await readFile(join(kbDir, "log.md"), "utf8")).match(/add-ingress/g)).toHaveLength(1);
+});
+
+test("kb add resume returns the same handoff contract without mutation and detects raw tampering", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "resume.md");
+  await writeFile(source, "resume source\n");
+  const added = await harness.run("kb", [
+    "add", source, "--source", "screenpipe", "--source-id", "resume-1", "--captured-at", "2026-07-10T13:00:00Z",
+    "--json", "--in", "research",
+  ], { env: { KB_NOW: "2026-07-10T14:00:00.000Z" } });
+  const first = JSON.parse(added.stdout);
+  const kbDir = join(harness.home, "kb", "research");
+  const beforeResume = await snapshotKbFiles(kbDir);
+
+  const resumed = await harness.runKb(["add", "--resume", first.result.handoffId, "--json", "--in", "research"]);
+  expect(resumed.code).toBe(0);
+  expect(resumed.stderr).toBe("");
+  expect(JSON.parse(resumed.stdout).result).toEqual({
+    ...first.result,
+    raw: { ...first.result.raw, created: false },
+  });
+  expect(await snapshotKbFiles(kbDir)).toEqual(beforeResume);
+
+  await writeFile(join(kbDir, first.result.raw.ref), "tampered\n");
+  const tampered = await harness.runKb(["add", "--resume", first.result.handoffId, "--json", "--in", "research"]);
+  expect(tampered.code).toBe(65);
+  expect(tampered.stdout).toBe("");
+  expect(JSON.parse(tampered.stderr)).toMatchObject({ error: { code: "RAW_TAMPERED" } });
+});
+
+test("kb add derivative completion verifies lineage and cataloging, then replays only equivalent outcomes", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "meeting.md");
+  await writeFile(source, "meeting source\n");
+  const staged = JSON.parse((await harness.runKb([
+    "add", source, "--source", "screenpipe", "--source-id", "meeting-1", "--json", "--in", "research",
+  ])).stdout);
+  const { handoffId } = staged.result;
+  const rawRef = staged.result.raw.ref as string;
+  const kbDir = join(harness.home, "kb", "research");
+  const memoryA = "memories/alpha.md";
+  const memoryB = "memories/beta.md";
+  await writeFile(join(kbDir, memoryA), "---\ntitle: Alpha\npermalink: alpha\n---\n\n## Summary\n\nAlpha\n");
+
+  const missingLineage = await harness.runKb([
+    "add", "--complete", handoffId, "--memory", memoryA, "--json", "--in", "research",
+  ]);
+  expect(missingLineage.code).toBe(65);
+  expect(JSON.parse(missingLineage.stderr)).toMatchObject({ error: { code: "MISSING_SOURCE_REF" } });
+
+  await writeFile(join(kbDir, memoryA), memoryWithSourceRef("Alpha", "alpha", rawRef));
+  const missingIndex = await harness.runKb([
+    "add", "--complete", handoffId, "--memory", memoryA, "--json", "--in", "research",
+  ]);
+  expect(missingIndex.code).toBe(65);
+  expect(JSON.parse(missingIndex.stderr)).toMatchObject({ error: { code: "INVALID_INDEX_ENTRY" } });
+
+  await writeFile(join(kbDir, "index.md"), `# KB Index\n\n${indexLine(memoryA, "Alpha")}\n${indexLine(memoryA, "Alpha Again")}\n`);
+  const duplicateIndex = await harness.runKb([
+    "add", "--complete", handoffId, "--memory", memoryA, "--json", "--in", "research",
+  ]);
+  expect(duplicateIndex.code).toBe(65);
+  expect(JSON.parse(duplicateIndex.stderr)).toMatchObject({ error: { code: "INVALID_INDEX_ENTRY" } });
+
+  await writeFile(join(kbDir, memoryB), memoryWithSourceRef("Beta", "beta", rawRef));
+  await writeFile(join(kbDir, "index.md"), `# KB Index\n\n${indexLine(memoryA, "Alpha")}\n${indexLine(memoryB, "Beta")}\n`);
+  const completed = await harness.run("kb", [
+    "add", "--complete", handoffId,
+    "--memory", memoryB, "--memory", memoryA, "--memory", memoryB,
+    "--json", "--in", "research",
+  ], { env: { KB_NOW: "2026-07-10T15:00:00.000Z" } });
+  const completionReceipt = JSON.parse(completed.stdout);
+  expect(completed.code).toBe(0);
+  expect(completionReceipt.result).toMatchObject({
+    state: "completed",
+    replayed: false,
+    handoffId,
+    outcome: "derived",
+    memories: [memoryA, memoryB],
+    requiresAgent: false,
+  });
+  expect(await readdir(join(kbDir, ".kb", "pending", "add"))).toHaveLength(0);
+  expect(await readdir(join(kbDir, ".kb", "completed", "add"))).toEqual([`${handoffId}.json`]);
+
+  const beforeReplay = await snapshotKbFiles(kbDir);
+  const replay = await harness.runKb([
+    "add", "--complete", handoffId, "--memory", memoryA, "--memory", memoryB, "--json", "--in", "research",
+  ]);
+  expect(replay.code).toBe(0);
+  expect(JSON.parse(replay.stdout).result.replayed).toBe(true);
+  expect(await snapshotKbFiles(kbDir)).toEqual(beforeReplay);
+
+  const conflict = await harness.runKb([
+    "add", "--complete", handoffId, "--no-memory", "--reason", "No durable knowledge", "--json", "--in", "research",
+  ]);
+  expect(conflict.code).toBe(65);
+  expect(JSON.parse(conflict.stderr)).toMatchObject({ error: { code: "COMPLETION_CONFLICT" } });
+  expect(await snapshotKbFiles(kbDir)).toEqual(beforeReplay);
+});
+
+test("kb add raw-only completion preserves the raw source and durable reason", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "noise.md");
+  await writeFile(source, "transient noise\n");
+  const staged = JSON.parse((await harness.runKb(["add", source, "--json", "--in", "research"])).stdout);
+  const kbDir = join(harness.home, "kb", "research");
+
+  const completed = await harness.runKb([
+    "add", "--complete", staged.result.handoffId,
+    "--no-memory", "--reason", "No durable knowledge", "--json", "--in", "research",
+  ]);
+  expect(completed.code).toBe(0);
+  expect(JSON.parse(completed.stdout).result).toMatchObject({
+    state: "completed",
+    outcome: "raw-only",
+    reason: "No durable knowledge",
+  });
+  expect(await readFile(join(kbDir, staged.result.raw.ref), "utf8")).toBe("transient noise\n");
+  expect(await readdir(join(kbDir, "memories"))).toEqual([]);
+
+  const stagedAgain = await harness.runKb(["add", source, "--json", "--in", "research"]);
+  expect(stagedAgain.code).toBe(0);
+  expect(JSON.parse(stagedAgain.stdout).result).toMatchObject({
+    state: "completed",
+    replayed: true,
+    outcome: "raw-only",
+    reason: "No durable knowledge",
+  });
+});
+
+test("kb status exposes exact Add handoff IDs and resume commands", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "status.md");
+  await writeFile(source, "status source\n");
+  const staged = JSON.parse((await harness.runKb([
+    "add", source, "--source", "screenpipe", "--source-id", "status-1", "--json", "--in", "research",
+  ])).stdout);
+
+  const status = await harness.runKb(["status", "--in", "research"]);
+  expect(status.code).toBe(0);
+  expect(status.stderr).toBe("");
+  expect(status.stdout).toContain(`- Add: ${staged.result.handoffId}\n`);
+  expect(status.stdout).toContain(`  Raw source: ${staged.result.raw.ref}\n`);
+  expect(status.stdout).toContain(`  Resume: kb add --resume ${staged.result.handoffId} --in research\n`);
+});
+
+test("kb add fails closed with the exact malformed state path", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "malformed.md");
+  await writeFile(source, "malformed source\n");
+  const staged = JSON.parse((await harness.runKb(["add", source, "--json", "--in", "research"])).stdout);
+  const stateRef = `.kb/pending/add/${staged.result.handoffId}.json`;
+  const kbDir = join(harness.home, "kb", "research");
+  await writeFile(join(kbDir, stateRef), "{not-json\n");
+
+  const resumed = await harness.runKb(["add", "--resume", staged.result.handoffId, "--json", "--in", "research"]);
+  expect(resumed.code).toBe(65);
+  expect(resumed.stdout).toBe("");
+  expect(JSON.parse(resumed.stderr)).toEqual({
+    schemaVersion: 1,
+    ok: false,
+    command: "add",
+    error: { code: "MALFORMED_STATE", message: `malformed Add state: ${stateRef}` },
+  });
+});
+
+test("kb add reconstructs pending state around an existing immutable raw file", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "recovery.md");
+  const bytes = "recovery source\n";
+  await writeFile(source, bytes);
+  const rawSha256 = createHash("sha256").update(bytes).digest("hex");
+  const kbDir = join(harness.home, "kb", "research");
+  const rawRef = `raw/recovery-${rawSha256.slice(0, 12)}.md`;
+  await writeFile(join(kbDir, rawRef), bytes);
+
+  const recovered = await harness.runKb(["add", source, "--json", "--in", "research"]);
+  expect(recovered.code).toBe(0);
+  expect(JSON.parse(recovered.stdout).result).toMatchObject({
+    state: "pending",
+    replayed: false,
+    raw: { ref: rawRef, created: false },
+  });
+  expect(await readFile(join(kbDir, rawRef), "utf8")).toBe(bytes);
+  expect(await readdir(join(kbDir, ".kb", "pending", "add"))).toHaveLength(1);
+  expect((await readFile(join(kbDir, "log.md"), "utf8")).match(/add-ingress/g)).toHaveLength(1);
+});
+
+test("kb add reconstructs missing pending state from one existing ingress log event", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "logged-recovery.md");
+  await writeFile(source, "logged recovery\n");
+  const args = [
+    "add", source, "--source", "screenpipe", "--source-id", "logged-recovery-1", "--json", "--in", "research",
+  ];
+  const first = JSON.parse((await harness.run("kb", args, {
+    env: { KB_NOW: "2026-07-10T14:00:00.000Z" },
+  })).stdout);
+  const kbDir = join(harness.home, "kb", "research");
+  await rm(join(kbDir, ".kb", "pending", "add", `${first.result.handoffId}.json`));
+
+  const recovered = await harness.run("kb", args, { env: { KB_NOW: "2026-07-10T15:00:00.000Z" } });
+  const receipt = JSON.parse(recovered.stdout);
+  expect(recovered.code).toBe(0);
+  expect(receipt.result).toMatchObject({
+    handoffId: first.result.handoffId,
+    replayed: true,
+    raw: { created: false },
+    provenance: { ingestedAt: "2026-07-10T14:00:00.000Z" },
+  });
+  expect((await readFile(join(kbDir, "log.md"), "utf8")).match(/add-ingress/g)).toHaveLength(1);
+  expect(await readdir(join(kbDir, ".kb", "pending", "add"))).toEqual([`${first.result.handoffId}.json`]);
+});
+
+test("legacy pending Add records remain resumable and positionally completable", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "legacy.md");
+  await writeFile(source, "legacy source\n");
+  const first = await harness.runKb(["add", source, "--in", "research"]);
+  const kbDir = join(harness.home, "kb", "research");
+  const rawRef = /^Raw source: (raw\/.+)$/m.exec(first.stdout)![1];
+  const currentState = join(kbDir, ".kb", "pending", "add", `${/^Handoff ID: (add-[a-f0-9]{24})$/m.exec(first.stdout)![1]}.json`);
+  await rm(currentState);
+  const legacyPath = join(kbDir, ".kb", "pending", "add", `${createHash("sha256").update(rawRef).digest("hex").slice(0, 12)}.json`);
+  await writeFile(legacyPath, `${JSON.stringify({
+    schemaVersion: 1,
+    kind: "add",
+    rawRef,
+    suggestedMemoryRef: "memories/legacy.md",
+    title: "Legacy",
+    urlReference: false,
+    arm: "b0",
+    createdAt: "2026-07-10T14:00:00.000Z",
+  }, null, 2)}\n`);
+
+  const resumed = await harness.runKb(["add", "--resume", rawRef, "--in", "research"]);
+  expect(resumed.code).toBe(0);
+  expect(resumed.stdout).toContain("Resuming pending Add");
+  expect(resumed.stdout).toContain(`Raw source: ${rawRef}`);
+
+  await writeFile(join(kbDir, "memories", "legacy.md"), memoryWithSourceRef("Legacy", "legacy", rawRef));
+  await writeFile(join(kbDir, "index.md"), `# KB Index\n\n${indexLine("memories/legacy.md", "Legacy")}\n`);
+  const completed = await harness.runKb([
+    "add", "--complete", rawRef, "memories/legacy.md", "--in", "research",
+  ]);
+  expect(completed).toEqual({
+    code: 0,
+    stdout: `Completed Add handoff: ${rawRef} -> memories/legacy.md\n`,
+    stderr: "",
+  });
 });
 
 test("kb add <url> stages a v1 URL reference instead of archiving HTML", async () => {
@@ -592,27 +1005,12 @@ test("kb add in a wiki KB prints the eager ingest playbook", async () => {
   const result = await harness.runKb(["add", source, "--kb", "wiki-research"]);
   const rawFile = (await readdir(join(harness.home, "kb", "wiki-research", "raw")))[0];
 
-  expect(result).toEqual({
-    code: 0,
-    stdout: `Wiki add playbook
-Raw source: raw/${rawFile}
-Memory target: memories/source.md
-URL behavior: local file copied verbatim into raw/.
-
-Agent half:
-1. Read raw/${rawFile} without editing it.
-2. Write or update memories/source.md in kb's structured markdown Memory format.
-3. Update related wiki pages in memories/ and index.md while preserving the raw/derived boundary.
-4. Print a contradiction checklist for claims the model thinks may conflict; kb does not guarantee semantic contradiction detection.
-5. Add or update one index.md line: - [[memories/source.md|Source]] | category: <category> | summary: <one-line summary>
-6. When the Memory exists and its index.md line is present, run:
-   kb add --complete raw/${rawFile} memories/source.md --in wiki-research
-
-If this output is lost, run:
-  kb add --resume raw/${rawFile} --in wiki-research
-`,
-    stderr: "",
-  });
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toStartWith("Wiki add playbook\n");
+  expect(result.stdout).toContain(`Raw source: raw/${rawFile}`);
+  expect(result.stdout).toContain("Treat memories/source.md as a filename hint, not a semantic route.");
+  expect(result.stdout).toContain("do not invent a schema or folder hierarchy from one artifact.");
 });
 
 test("kb draft <title> creates a Basic Memory-compatible memory template", async () => {
@@ -722,7 +1120,7 @@ test("kb search uses Basic Memory when the Engine is enabled and keeps the norma
     "bm",
     `#!/bin/sh
 printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
 if [ "$1" = "tool" ] && [ "$2" = "search-notes" ]; then
   /bin/cat '${fixturePath("search-entity.json")}'
   exit 0
@@ -747,7 +1145,7 @@ Results: 1
     stderr: "",
   });
   expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(
-    "bm tool search-notes durable observation --project research\n",
+    "bm --version\nbm tool search-notes durable observation --project research\n",
   );
   expect(await readFile(join(kbDir, "log.md"), "utf8")).toContain("query | durable observation");
 });
@@ -776,7 +1174,7 @@ Line format:
   await harness.writeFakeExecutable(
     "bm",
     `#!/bin/sh
-if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
 /bin/cat '${fixturePath("search-entity.json")}'
 `,
   );
@@ -799,7 +1197,7 @@ Line format:
 `);
   await harness.writeFakeExecutable(
     "bm",
-    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\necho 'missing project' >&2\nexit 1\n",
+    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi\necho 'missing project' >&2\nexit 1\n",
   );
 
   const result = await harness.runKb(["search", "fallback", "--kb", "research"]);
@@ -807,7 +1205,7 @@ Line format:
   expect(result).toEqual({
     code: 69,
     stdout: "",
-    stderr: "kb: search engine failed; engineless fallback was not used. missing project\n",
+    stderr: "kb: search engine failed; engineless fallback was not used. Basic Memory search failed. missing project\n",
   });
 });
 
@@ -874,31 +1272,16 @@ test("kb enable search lazy-installs Basic Memory, adds the project, reindexes, 
     "uvx",
     `#!/bin/sh
 printf 'uvx %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "basic-memory" ] && [ "$2" = "--version" ]; then
-  /bin/cat > "\${0%/*}/bm" <<'SH'
-#!/bin/sh
-printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
-if [ "$1" = "--version" ]; then
-  echo "Basic Memory version: 0.22.1"
-  exit 0
-fi
-if [ "$1" = "project" ] && [ "$2" = "add" ]; then
-  echo "Project '$3' added successfully"
-  exit 0
-fi
-if [ "$1" = "reindex" ]; then
-  echo "Reindex complete!"
-  exit 0
-fi
-exit 2
-SH
-  /bin/chmod +x "\${0%/*}/bm"
-  echo "Basic Memory version: 0.22.1"
-  exit 0
-fi
 if [ "$1" = "--version" ]; then
   echo "uvx 0.0.0"
   exit 0
+fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ]; then
+  shift 3
+  if [ "$1" = "--version" ]; then echo "Basic Memory version: 0.22.1"; exit 0; fi
+  if [ "$1" = "project" ] && [ "$2" = "list" ]; then echo '{"projects":[]}'; exit 0; fi
+  if [ "$1" = "project" ] && [ "$2" = "add" ]; then echo "Project '$3' added successfully"; exit 0; fi
+  if [ "$1" = "reindex" ]; then echo "Reindex complete!"; exit 0; fi
 fi
 exit 2
 `,
@@ -918,9 +1301,10 @@ engine:
 lastReflectAt: null
 `);
   expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(`uvx --version
-uvx basic-memory --version
-bm project add research ${kbDir}
-bm reindex --project research --search
+uvx --from basic-memory==0.22.1 bm --version
+uvx --from basic-memory==0.22.1 bm project list --local --json
+uvx --from basic-memory==0.22.1 bm project add research ${kbDir}
+uvx --from basic-memory==0.22.1 bm reindex --project research --search
 `);
 });
 
@@ -967,6 +1351,8 @@ ${indexLine("memories/gamma-memory.md", "Gamma Memory", "research", "sharedterm 
     "bm",
     `#!/bin/sh
 printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then echo '{"projects":[]}'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "add" ]; then
   echo "Project '$3' added successfully"
   exit 0
@@ -1032,7 +1418,7 @@ test("kb enable search fails clearly without uvx and leaves the KB in B0", async
   expect(result).toEqual({
     code: 69,
     stdout: "",
-    stderr: "kb: cannot enable search: uvx is not on PATH. Install uv, then rerun `kb enable search`.\n",
+    stderr: "kb: cannot enable search: uvx availability failed. uvx is not on PATH. Install uv, then rerun `kb enable search`.\n",
   });
   expect(await readFile(join(kbDir, "kb.yaml"), "utf8")).toBe(`schemaVersion: 1
 formatVersion: basic-memory-note-v1
@@ -1070,7 +1456,7 @@ test("kb enable search reports reindex failure and leaves the KB in B0", async (
   const kbDir = join(harness.home, "kb", "research");
   await harness.writeFakeExecutable(
     "bm",
-    "#!/bin/sh\nprintf 'bm %s\\n' \"$*\" >> \"$HOME/engine-calls\"\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"project\" ]; then exit 0; fi\necho 'reindex failed' >&2\nexit 1\n",
+    "#!/bin/sh\nprintf 'bm %s\\n' \"$*\" >> \"$HOME/engine-calls\"\nif [ \"$1\" = \"--version\" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"list\" ]; then echo '{\"projects\":[]}'; exit 0; fi\nif [ \"$1\" = \"project\" ] && [ \"$2\" = \"add\" ]; then exit 0; fi\necho 'reindex failed' >&2\nexit 1\n",
   );
 
   const result = await harness.runKb(["enable", "search", "--kb", "research"]);
@@ -1422,6 +1808,21 @@ ${body}
 `);
 }
 
+function memoryWithSourceRef(title: string, permalink: string, rawRef: string): string {
+  return `---
+title: ${title}
+type: note
+permalink: ${permalink}
+source_refs:
+  - ${rawRef}
+---
+
+## Summary
+
+${title}
+`;
+}
+
 async function snapshotKb(kbDir: string): Promise<Record<string, string>> {
   const files = ["index.md", "log.md", "kb.yaml"];
   const memories = await readdir(join(kbDir, "memories"));
@@ -1433,6 +1834,20 @@ async function snapshotKb(kbDir: string): Promise<Record<string, string>> {
     const path = join("memories", file);
     snapshot[path] = await readFile(join(kbDir, path), "utf8");
     snapshot[`${path}:mtime`] = String((await stat(join(kbDir, path))).mtimeMs);
+  }
+  return snapshot;
+}
+
+async function snapshotKbFiles(kbDir: string, relativeDir = ""): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+  const directory = join(kbDir, relativeDir);
+  for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+    const ref = join(relativeDir, entry.name);
+    if (entry.isDirectory()) {
+      Object.assign(snapshot, await snapshotKbFiles(kbDir, ref));
+    } else if (entry.isFile()) {
+      snapshot[ref] = await readFile(join(kbDir, ref), "utf8");
+    }
   }
   return snapshot;
 }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, parse, resolve } from "node:path";
@@ -28,6 +28,7 @@ const PRODUCT_COMMANDS = new Set([
   "read",
   "log",
   "enable",
+  "schema",
   "reflect",
   "check",
 ]);
@@ -57,6 +58,18 @@ type ParseResult =
       arm: string | null;
       resumeRef: string | null;
       complete: boolean;
+      json: boolean;
+      source: string | null;
+      sourceId: string | null;
+      capturedAt: string | null;
+      memories: string[];
+      noMemory: boolean;
+      reason: string | null;
+      schemaType: string | null;
+      schemaThreshold: string | null;
+      schemaAll: boolean;
+      schemaStrict: boolean;
+      schemaDraft: boolean;
     }
   | { ok: false; message: string };
 
@@ -75,8 +88,12 @@ export async function main(argv: string[]): Promise<number> {
 async function runMain(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv);
 
-  if (!parsed.ok) {
-    writeError(parsed.message);
+  if (parsed.ok === false) {
+    if (argv.includes("--json") && argv.includes("add")) {
+      writeAddError(new AddCommandError("INVALID_USAGE", parsed.message, EXIT_USAGE), true);
+    } else {
+      writeError(parsed.message);
+    }
     return EXIT_USAGE;
   }
 
@@ -155,6 +172,13 @@ async function runMain(argv: string[]): Promise<number> {
     return EXIT_USAGE;
   }
 
+  if (parsed.command !== "schema"
+    && (parsed.schemaType !== null || parsed.schemaThreshold !== null || parsed.schemaAll
+      || parsed.schemaStrict || parsed.schemaDraft)) {
+    writeError("--type, --threshold, --all, --strict, and --draft are only valid with kb schema");
+    return EXIT_USAGE;
+  }
+
   if (parsed.command === "new") {
     return createKb(parsed.args, parsed.arm);
   }
@@ -183,8 +207,30 @@ async function runMain(argv: string[]): Promise<number> {
     return searchKb(parsed.kbName, parsed.args);
   }
 
+  if (parsed.command === "schema") {
+    return schemaKb(parsed.kbName, parsed.args, {
+      json: parsed.json,
+      type: parsed.schemaType,
+      threshold: parsed.schemaThreshold,
+      all: parsed.schemaAll,
+      strict: parsed.schemaStrict,
+      draft: parsed.schemaDraft,
+      memories: parsed.memories,
+      addOnlyFlags: parsed.source !== null || parsed.sourceId !== null || parsed.capturedAt !== null
+        || parsed.complete || parsed.resumeRef !== null || parsed.noMemory || parsed.reason !== null,
+    });
+  }
+
   if (parsed.command === "add") {
-    return addSource(parsed.kbName, parsed.args, parsed.resumeRef, parsed.complete);
+    return addSource(parsed.kbName, parsed.args, parsed.resumeRef, parsed.complete, {
+      json: parsed.json,
+      source: parsed.source,
+      sourceId: parsed.sourceId,
+      capturedAt: parsed.capturedAt,
+      memories: parsed.memories,
+      noMemory: parsed.noMemory,
+      reason: parsed.reason,
+    });
   }
 
   if (parsed.command === "draft") {
@@ -221,6 +267,18 @@ function parseArgs(argv: string[]): ParseResult {
   let arm: string | null = null;
   let resumeRef: string | null = null;
   let complete = false;
+  let json = false;
+  let source: string | null = null;
+  let sourceId: string | null = null;
+  let capturedAt: string | null = null;
+  const memories: string[] = [];
+  let noMemory = false;
+  let reason: string | null = null;
+  let schemaType: string | null = null;
+  let schemaThreshold: string | null = null;
+  let schemaAll = false;
+  let schemaStrict = false;
+  let schemaDraft = false;
   const args: string[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -278,6 +336,47 @@ function parseArgs(argv: string[]): ParseResult {
       continue;
     }
 
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+
+    if (["--source", "--source-id", "--captured-at", "--memory", "--reason", "--type", "--threshold"].includes(arg)) {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("-")) {
+        return { ok: false, message: `${arg} requires a value` };
+      }
+      if (arg === "--source") source = value;
+      if (arg === "--source-id") sourceId = value;
+      if (arg === "--captured-at") capturedAt = value;
+      if (arg === "--memory") memories.push(value);
+      if (arg === "--reason") reason = value;
+      if (arg === "--type") schemaType = value;
+      if (arg === "--threshold") schemaThreshold = value;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--no-memory") {
+      noMemory = true;
+      continue;
+    }
+
+    if (arg === "--all") {
+      schemaAll = true;
+      continue;
+    }
+
+    if (arg === "--strict") {
+      schemaStrict = true;
+      continue;
+    }
+
+    if (arg === "--draft") {
+      schemaDraft = true;
+      continue;
+    }
+
     if (arg === "--arm") {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("-")) {
@@ -309,7 +408,31 @@ function parseArgs(argv: string[]): ParseResult {
     command = HIDDEN_COMMAND_ALIASES[arg] ?? arg;
   }
 
-  return { ok: true, help, version, kbName, targetFlag, command, args, guide, arm, resumeRef, complete };
+  return {
+    ok: true,
+    help,
+    version,
+    kbName,
+    targetFlag,
+    command,
+    args,
+    guide,
+    arm,
+    resumeRef,
+    complete,
+    json,
+    source,
+    sourceId,
+    capturedAt,
+    memories,
+    noMemory,
+    reason,
+    schemaType,
+    schemaThreshold,
+    schemaAll,
+    schemaStrict,
+    schemaDraft,
+  };
 }
 
 function writeError(message: string): void {
@@ -353,7 +476,8 @@ Ask:
   log            Read or append the KB log.
 
 Maintain:
-  enable search  Enable Basic Memory search over existing files.
+  enable search  Enable local search and schema tooling over existing files.
+  schema         Infer, validate, or inspect drift in Memory schemas.
   reflect        Print a reflect plan for changed Memories.
   check          Print deterministic structural candidates and an agent playbook.
 
@@ -452,8 +576,11 @@ Rules of thumb:
 Bring in one raw source, then print the Add playbook for the agent.
 
 Usage:
-  kb add <file-or-url> [--in <name>]
-  kb add --resume <raw-ref> [--in <name>]
+  kb add <file-or-url> [--source <producer> --source-id <id>] [--captured-at <RFC3339>] [--json] [--in <name>]
+  kb add --resume <handoff-id> [--json] [--in <name>]
+  kb add --complete <handoff-id> --memory <memories/ref.md> [--memory <memories/another.md> ...] [--json] [--in <name>]
+  kb add --complete <handoff-id> --no-memory --reason <single-line-reason> [--json] [--in <name>]
+  kb add --resume <raw-ref> [--in <name>]  # one-release legacy compatibility
   kb add --complete <raw-ref> <memory-ref> [--in <name>]
 
 Rules of thumb:
@@ -521,6 +648,19 @@ Usage:
 
 Rules of thumb:
   Existing raw/, memories/, index.md, and log.md stay unchanged.
+`,
+    schema: `kb schema
+
+Use the enabled local Engine through kb; never target an Engine project directly.
+
+Usage:
+  kb schema infer <type> [--threshold <0..1>] [--json] [--in <name>]
+  kb schema validate [--type <type> | --memory <memory-ref> | --all] [--strict] [--json] [--in <name>]
+  kb schema diff <type> [--json] [--in <name>]
+
+Rules of thumb:
+  Schema commands are read-only and never install, save, or rewrite a schema.
+  Run kb enable search first. Inference and drift are evidence for agent review, not automatic truth.
 `,
     reflect: `kb reflect
 
@@ -751,7 +891,7 @@ async function scaffoldKb(kbDir: string, name: string, arm = "b0"): Promise<void
   if (!(await exists(kbDir))) {
     await mkdir(kbDir);
   }
-  await ensureScaffoldFile(join(kbDir, "kb.yaml"), kbYaml(arm, name));
+  await ensureScaffoldFile(join(kbDir, "kb.yaml"), kbYaml(arm));
   await ensureScaffoldFile(join(kbDir, "AGENTS.md"), agentsMd());
   await ensureScaffoldFile(join(kbDir, "index.md"), indexMd());
   await ensureScaffoldFile(join(kbDir, "log.md"), logMd(name));
@@ -874,7 +1014,7 @@ async function enableKb(kbName: string | null, args: string[]): Promise<number> 
     }
 
     const enabled = await new BasicMemoryAdapter().enable(target.path, target.name);
-    if (!enabled.ok) {
+    if (enabled.ok === false) {
       writeError(`cannot enable search: ${enabled.message}`);
       return EXIT_UNAVAILABLE;
     }
@@ -911,10 +1051,20 @@ async function searchKb(kbName: string | null, args: string[]): Promise<number> 
   const config = await readKbConfig(target.path);
   let results: SearchResult[];
   if (config.engineState === "enabled") {
-    const searched = await new BasicMemoryAdapter().search(target.path, config.engineProject ?? target.name, query);
-    if (!searched.ok) {
+    const adapter = new BasicMemoryAdapter();
+    const project = config.engineProject ?? target.name;
+    if (await exists(engineDirtyPath(target.path))) {
+      const refreshed = await adapter.reindex(target.path, project);
+      if (refreshed.ok === false) {
+        writeError(`search engine refresh failed; dirty index was not used. ${refreshed.message}`);
+        return refreshed.exitCode ?? EXIT_UNAVAILABLE;
+      }
+      await clearEngineDirty(target.path);
+    }
+    const searched = await adapter.search(target.path, project, query);
+    if (searched.ok === false) {
       writeError(`search engine failed; engineless fallback was not used. ${searched.message}`);
-      return EXIT_UNAVAILABLE;
+      return searched.exitCode ?? EXIT_UNAVAILABLE;
     }
     results = searched.value.map((result) => ({ ...result, source: "memory" }));
   } else {
@@ -929,91 +1079,375 @@ async function searchKb(kbName: string | null, args: string[]): Promise<number> 
   return 0;
 }
 
+type SchemaCommandOptions = {
+  json: boolean;
+  type: string | null;
+  threshold: string | null;
+  all: boolean;
+  strict: boolean;
+  draft: boolean;
+  memories: string[];
+  addOnlyFlags: boolean;
+};
+
+class SchemaCommandError extends Error {
+  constructor(readonly code: string, message: string, readonly exitCode: number) {
+    super(message);
+  }
+}
+
+async function schemaKb(
+  kbName: string | null,
+  args: string[],
+  options: SchemaCommandOptions,
+): Promise<number> {
+  const subcommand = args[0] ?? "schema";
+  try {
+    if (options.addOnlyFlags) {
+      throw new SchemaCommandError("INVALID_USAGE", "Add-only flags are not valid with kb schema", EXIT_USAGE);
+    }
+    if (options.draft) {
+      throw new SchemaCommandError(
+        "DEFERRED",
+        "schema draft creation is deferred; review inference and write the schema Memory explicitly",
+        EXIT_USAGE,
+      );
+    }
+    const target = await resolveTargetKb(kbName);
+    if (target === null) {
+      throw new SchemaCommandError(
+        "INVALID_TARGET",
+        kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`,
+        EXIT_USAGE,
+      );
+    }
+    const config = await readKbConfig(target.path);
+    if (config.engineState !== "enabled" || config.engineProject === null) {
+      throw new SchemaCommandError(
+        "SCHEMA_UNAVAILABLE",
+        `schema tooling is not enabled for ${target.name}; run \`kb enable search --in ${target.name}\``,
+        EXIT_UNAVAILABLE,
+      );
+    }
+
+    const adapter = new BasicMemoryAdapter();
+    if (subcommand === "infer") {
+      if (args.length !== 2 || options.type !== null || options.all || options.strict || options.memories.length > 0) {
+        throw new SchemaCommandError("INVALID_USAGE", "usage: kb schema infer <type> [--threshold <0..1>]", EXIT_USAGE);
+      }
+      const noteType = validateSchemaType(args[1]);
+      const threshold = parseSchemaThreshold(options.threshold);
+      const inferred = await adapter.inferSchema(target.path, config.engineProject, noteType, threshold);
+      if (inferred.ok === false) throw schemaEngineFailure(inferred);
+      await clearEngineDirty(target.path);
+      const result = {
+        type: inferred.value.noteType,
+        notesAnalyzed: inferred.value.notesAnalyzed,
+        threshold,
+        fields: inferred.value.fieldFrequencies,
+        suggestedRequired: inferred.value.suggestedRequired,
+        suggestedOptional: inferred.value.suggestedOptional,
+        excluded: inferred.value.excluded,
+        suggestedSchema: inferred.value.suggestedSchema,
+        agentReviewRequired: true,
+        suggestedSchemaRef: `memories/schema-${slugify(noteType)}.md`,
+      };
+      writeSchemaSuccess(target, "schema infer", result, options.json, renderSchemaInference(result));
+      return 0;
+    }
+
+    if (subcommand === "validate") {
+      if (args.length !== 1 || options.threshold !== null) {
+        throw new SchemaCommandError(
+          "INVALID_USAGE",
+          "usage: kb schema validate [--type <type> | --memory <memory-ref> | --all] [--strict]",
+          EXIT_USAGE,
+        );
+      }
+      const selectorCount = Number(options.type !== null) + Number(options.all) + Number(options.memories.length > 0);
+      if (selectorCount > 1 || options.memories.length > 1) {
+        throw new SchemaCommandError("INVALID_USAGE", "schema validate accepts at most one selector", EXIT_USAGE);
+      }
+      const selector = options.type !== null
+        ? { kind: "type" as const, type: validateSchemaType(options.type) }
+        : options.memories.length === 1
+          ? { kind: "memory" as const, ref: validateSchemaMemoryRef(target.path, options.memories[0]) }
+          : { kind: "all" as const };
+      if (selector.kind === "type") await requireUniqueSchemaNote(target.path, selector.type);
+      const validated = await adapter.validateSchema(target.path, config.engineProject, selector);
+      if (validated.ok === false) throw schemaEngineFailure(validated);
+      await clearEngineDirty(target.path);
+      const blocked = validated.value.errorCount > 0 || (options.strict && validated.value.warningCount > 0);
+      const result = {
+        selector: selector.kind === "all"
+          ? { kind: "all" }
+          : { kind: selector.kind, value: selector.kind === "type" ? selector.type : selector.ref },
+        strictGate: options.strict,
+        totalNotes: validated.value.totalNotes,
+        totalEntities: validated.value.totalEntities,
+        validCount: validated.value.validCount,
+        warningCount: validated.value.warningCount,
+        errorCount: validated.value.errorCount,
+        passed: !blocked,
+        results: validated.value.results,
+      };
+      writeSchemaSuccess(target, "schema validate", result, options.json, renderSchemaValidation(result));
+      return blocked ? EXIT_DATAERR : 0;
+    }
+
+    if (subcommand === "diff") {
+      if (args.length !== 2 || options.type !== null || options.threshold !== null || options.all
+        || options.strict || options.memories.length > 0) {
+        throw new SchemaCommandError("INVALID_USAGE", "usage: kb schema diff <type>", EXIT_USAGE);
+      }
+      const noteType = validateSchemaType(args[1]);
+      await requireUniqueSchemaNote(target.path, noteType);
+      const diffed = await adapter.diffSchema(target.path, config.engineProject, noteType);
+      if (diffed.ok === false) throw schemaEngineFailure(diffed);
+      await clearEngineDirty(target.path);
+      const result = { ...diffed.value, type: diffed.value.noteType, agentReviewRequired: true };
+      writeSchemaSuccess(target, "schema diff", result, options.json, renderSchemaDiff(result));
+      return 0;
+    }
+
+    throw new SchemaCommandError("INVALID_USAGE", "usage: kb schema infer|validate|diff", EXIT_USAGE);
+  } catch (error) {
+    if (error instanceof SchemaCommandError) {
+      writeSchemaError(`schema ${subcommand}`.trim(), error, options.json);
+      return error.exitCode;
+    }
+    if (error instanceof CliError) {
+      const wrapped = new SchemaCommandError("INVALID_KB_STATE", error.message, error.exitCode);
+      writeSchemaError(`schema ${subcommand}`.trim(), wrapped, options.json);
+      return wrapped.exitCode;
+    }
+    throw error;
+  }
+}
+
+function validateSchemaType(value: string): string {
+  const type = value.trim();
+  if (type.length === 0 || !isSingleLine(type)) {
+    throw new SchemaCommandError("INVALID_TYPE", "schema type must be a non-empty single line", EXIT_USAGE);
+  }
+  return type;
+}
+
+function parseSchemaThreshold(value: string | null): number {
+  if (value === null) return 0.25;
+  const threshold = Number(value);
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+    throw new SchemaCommandError("INVALID_THRESHOLD", "--threshold must be a number from 0 through 1", EXIT_USAGE);
+  }
+  return threshold;
+}
+
+function validateSchemaMemoryRef(kbPath: string, ref: string): string {
+  if (!isKbRef(kbPath, ref, "memories") || !ref.endsWith(".md")) {
+    throw new SchemaCommandError("INVALID_MEMORY_REF", `Memory ref must resolve under memories/: ${ref}`, EXIT_USAGE);
+  }
+  return ref;
+}
+
+async function requireUniqueSchemaNote(kbPath: string, noteType: string): Promise<string> {
+  const matches: string[] = [];
+  for (const entry of await readdir(join(kbPath, "memories"), { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+    const text = await readFile(join(kbPath, "memories", entry.name), "utf8");
+    if (frontmatterScalar(text, "type") === "schema" && frontmatterScalar(text, "entity") === noteType) {
+      matches.push(`memories/${entry.name}`);
+    }
+  }
+  if (matches.length === 0) {
+    throw new SchemaCommandError("SCHEMA_NOT_FOUND", `no schema Memory found for type ${noteType}`, EXIT_DATAERR);
+  }
+  if (matches.length > 1) {
+    throw new SchemaCommandError(
+      "SCHEMA_AMBIGUOUS",
+      `multiple schema Memories found for type ${noteType}: ${matches.join(", ")}`,
+      EXIT_DATAERR,
+    );
+  }
+  return matches[0];
+}
+
+function frontmatterScalar(text: string, key: string): string | null {
+  if (!text.startsWith("---\n")) return null;
+  const end = text.indexOf("\n---", 4);
+  if (end < 0) return null;
+  const match = new RegExp(`^${key}:\\s*(.+)$`, "m").exec(text.slice(4, end));
+  return match?.[1]?.trim() ?? null;
+}
+
+function schemaEngineFailure(failure: { message: string; exitCode?: 130 | 143 }): SchemaCommandError {
+  return new SchemaCommandError("ENGINE_FAILURE", failure.message, failure.exitCode ?? EXIT_UNAVAILABLE);
+}
+
+function writeSchemaSuccess(
+  target: { name: string; path: string },
+  command: string,
+  result: Record<string, unknown>,
+  json: boolean,
+  text: string,
+): void {
+  if (json) {
+    process.stdout.write(`${JSON.stringify({
+      schemaVersion: 1,
+      ok: true,
+      command,
+      kb: { name: target.name, path: target.path },
+      result,
+    })}\n`);
+    return;
+  }
+  process.stdout.write(text);
+}
+
+function writeSchemaError(command: string, error: SchemaCommandError, json: boolean): void {
+  if (json) {
+    process.stderr.write(`${JSON.stringify({
+      schemaVersion: 1,
+      ok: false,
+      command,
+      error: { code: error.code, message: error.message },
+    })}\n`);
+    return;
+  }
+  writeError(error.message);
+}
+
+function renderSchemaInference(result: {
+  type: string;
+  notesAnalyzed: number;
+  threshold: number;
+  suggestedSchemaRef: string;
+}): string {
+  return `Schema inference\nType: ${result.type}\nNotes analyzed: ${result.notesAnalyzed}\nThreshold: ${result.threshold}\nSuggested schema Memory: ${result.suggestedSchemaRef}\nAgent review required; no schema was written.\n`;
+}
+
+function renderSchemaValidation(result: {
+  warningCount: number;
+  errorCount: number;
+  passed: boolean;
+}): string {
+  return `Schema validation\nWarnings: ${result.warningCount}\nErrors: ${result.errorCount}\nPassed: ${result.passed ? "yes" : "no"}\n`;
+}
+
+function renderSchemaDiff(result: { type: string; hasDrift: boolean }): string {
+  return `Schema drift\nType: ${result.type}\nDrift found: ${result.hasDrift ? "yes" : "no"}\nAgent review required; no schema was changed.\n`;
+}
+
 async function addSource(
   kbName: string | null,
   args: string[],
   resumeRef: string | null,
   complete: boolean,
+  options: AddCommandOptions,
 ): Promise<number> {
-  if ((!complete && resumeRef === null && args.length !== 1)
-    || (resumeRef !== null && args.length !== 0)
-    || (complete && args.length !== 2)) {
-    writeError("usage: kb add <file-or-url>");
-    return EXIT_USAGE;
-  }
-
-  const target = await resolveTargetKb(kbName);
-  if (target === null) {
-    writeError(kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`);
-    return EXIT_USAGE;
-  }
-  const config = await readKbConfig(target.path);
-
-  if (resumeRef !== null) {
-    const record = await readPendingAdd(target.path, resumeRef);
-    if (record === null) {
-      writeError(`no pending Add handoff for ${resumeRef}`);
-      return EXIT_USAGE;
+  try {
+    validateAddInvocation(args, resumeRef, complete, options);
+    const target = await resolveTargetKb(kbName);
+    if (target === null) {
+      throw new AddCommandError(
+        "INVALID_TARGET",
+        kbName === null ? "no KB found; run `kb new <name>` or use --in <name>" : `unknown KB: ${kbName}`,
+        EXIT_USAGE,
+      );
     }
-    process.stdout.write(`Resuming pending Add\n\n${renderPendingAddPlaybook(record, target.name)}`);
-    return 0;
-  }
 
-  if (complete) {
-    const [rawRef, memoryRef] = args;
-    const record = await readPendingAdd(target.path, rawRef);
-    if (record === null) {
-      writeError(`no pending Add handoff for ${rawRef}`);
-      return EXIT_USAGE;
-    }
-    if (!isKbRef(target.path, rawRef, "raw") || !(await exists(join(target.path, rawRef)))) {
-      writeError(`cannot complete Add: Raw source not found: ${rawRef}`);
-      return EXIT_USAGE;
-    }
-    if (!isKbRef(target.path, memoryRef, "memories") || !(await exists(join(target.path, memoryRef)))) {
-      writeError(`cannot complete Add: Memory not found: ${memoryRef}`);
-      return EXIT_USAGE;
-    }
-    const indexRefs = new Set(
-      indexEntryLines(await readFile(join(target.path, "index.md"), "utf8"))
-        .map((line) => parseIndexLine(line)?.ref)
-        .filter((ref): ref is string => ref !== undefined),
-    );
-    if (!indexRefs.has(memoryRef)) {
-      writeError(`cannot complete Add: index.md does not reference ${memoryRef}`);
-      return EXIT_USAGE;
-    }
-    await rm(pendingAddPath(target.path, rawRef), { force: true });
-    await appendLogEntry(target.path, "handoff-complete", `add ${rawRef} -> ${memoryRef}`);
-    process.stdout.write(`Completed Add handoff: ${rawRef} -> ${memoryRef}\n`);
-    return 0;
-  }
+    return await withFileLock(join(target.path, ".kb-state.lock"), `KB ${target.name} state`, async () => {
+      if (resumeRef !== null) {
+        const loaded = await loadAddHandoff(target.path, resumeRef);
+        if (loaded === null) {
+          throw new AddCommandError("HANDOFF_NOT_FOUND", `no Add handoff for ${resumeRef}`, EXIT_USAGE);
+        }
+        await verifyRawIntegrity(target.path, loaded.record);
+        if (loaded.completed !== null) {
+          writeAddSuccess(target, completedAddResult(loaded.completed, true), options.json);
+          return 0;
+        }
+        const record = loaded.record;
+        const playbook = renderPendingAddPlaybook(record, target.name);
+        writeAddSuccess(target, pendingAddResult(record, false, false, playbook), options.json,
+          `Resuming pending Add\n\n${playbook}`);
+        return 0;
+      }
 
-  const input = args[0];
-  const staged = isUrl(input) ? await stageUrlReference(target.path, input) : await stageFileSource(target.path, input);
-  if (staged === null) {
-    return EXIT_USAGE;
-  }
+      if (complete) {
+        return completeAddHandoff(target, args, options);
+      }
 
-  const rawRef = `raw/${staged.rawFile}`;
-  const existing = await readPendingAdd(target.path, rawRef);
-  const record: PendingAdd = existing ?? {
-    schemaVersion: 1,
-    kind: "add",
-    rawRef,
-    suggestedMemoryRef: `memories/${staged.memoryFile}`,
-    title: staged.title,
-    urlReference: staged.urlReference,
-    arm: config.arm,
-    createdAt: nowInstant(),
-  };
-  await writePendingAdd(target.path, record);
-  if (staged.created) {
-    await appendLogEntry(target.path, "add", staged.rawFile);
+      const input = args[0];
+      const prepared = isUrl(input) ? prepareUrlReference(input) : await prepareFileSource(input);
+      const provenance = normalizeAddProvenance(options);
+      const identitySha256 = addIdentitySha256(prepared.rawSha256, provenance);
+      const handoffId = `add-${identitySha256.slice(0, 24)}`;
+      const existing = await loadAddHandoff(target.path, handoffId);
+      if (existing !== null) {
+        if (existing.record.identitySha256 !== identitySha256 || existing.record.rawSha256 !== prepared.rawSha256) {
+          throw new AddCommandError(
+            "SOURCE_ID_CONFLICT",
+            provenance.name === null
+              ? `content identity ${handoffId} was previously recorded with different bytes`
+              : `source ${provenance.name}/${provenance.id} was previously recorded with different bytes`,
+            EXIT_DATAERR,
+          );
+        }
+        await verifyRawIntegrity(target.path, existing.record);
+        if (existing.completed !== null) {
+          writeAddSuccess(target, completedAddResult(existing.completed, true), options.json);
+          return 0;
+        }
+        await appendIngressLogOnce(target.path, existing.record);
+        const playbook = renderPendingAddPlaybook(existing.record, target.name);
+        writeAddSuccess(target, pendingAddResult(existing.record, true, false, playbook), options.json,
+          `Raw source already present: ${existing.record.rawRef}\nReplaying pending Add: ${handoffId}\n\n${playbook}`);
+        return 0;
+      }
+
+      const config = await readKbConfig(target.path);
+      const loggedEvent = await readIngressLogEvent(target.path, handoffId);
+      if (loggedEvent !== null && (loggedEvent.rawRef !== `raw/${prepared.rawFile}`
+        || loggedEvent.rawSha256 !== prepared.rawSha256
+        || loggedEvent.source !== provenance.name || loggedEvent.sourceId !== provenance.id
+        || loggedEvent.capturedAt !== provenance.capturedAt)) {
+        throw new AddCommandError("MALFORMED_STATE", `ingress log conflicts with Add identity ${handoffId}`, EXIT_DATAERR);
+      }
+      const createdAt = loggedEvent?.ingestedAt ?? nowInstant();
+      const rawCreated = await writeRawAtomicIfMissing(target.path, prepared.rawFile, prepared.bytes);
+      const record: PendingAddV2 = {
+        schemaVersion: 2,
+        kind: "add",
+        handoffId,
+        identitySha256,
+        state: "pending",
+        rawRef: `raw/${prepared.rawFile}`,
+        rawSha256: prepared.rawSha256,
+        suggestedMemoryRef: `memories/${prepared.memoryFile}`,
+        source: provenance,
+        createdAt,
+        title: prepared.title,
+        urlReference: prepared.urlReference,
+        arm: config.arm,
+      };
+      await writePendingAddV2(target.path, record);
+      await appendIngressLogOnce(target.path, record);
+      const playbook = renderPendingAddPlaybook(record, target.name);
+      writeAddSuccess(target, pendingAddResult(record, loggedEvent !== null, rawCreated, playbook), options.json, playbook);
+      return 0;
+    });
+  } catch (error) {
+    if (error instanceof AddCommandError) {
+      writeAddError(error, options.json);
+      return error.exitCode;
+    }
+    if (error instanceof CliError) {
+      const wrapped = new AddCommandError("INVALID_KB_STATE", error.message, error.exitCode);
+      writeAddError(wrapped, options.json);
+      return wrapped.exitCode;
+    }
+    throw error;
   }
-  const playbook = renderPendingAddPlaybook(record, target.name);
-  process.stdout.write(staged.created ? playbook : `Raw source already present: raw/${staged.rawFile}\n\n${playbook}`);
-  return 0;
 }
 
 async function createMemoryNote(kbName: string | null, args: string[], resumeRef: string | null): Promise<number> {
@@ -1236,7 +1670,29 @@ type StagedSource = {
   created: boolean;
 };
 
-type PendingAdd = {
+type AddCommandOptions = {
+  json: boolean;
+  source: string | null;
+  sourceId: string | null;
+  capturedAt: string | null;
+  memories: string[];
+  noMemory: boolean;
+  reason: string | null;
+};
+
+class AddCommandError extends Error {
+  constructor(readonly code: string, message: string, readonly exitCode: number) {
+    super(message);
+  }
+}
+
+type AddProvenance = {
+  name: string | null;
+  id: string | null;
+  capturedAt: string | null;
+};
+
+type LegacyPendingAdd = {
   schemaVersion: 1;
   kind: "add";
   rawRef: string;
@@ -1246,6 +1702,32 @@ type PendingAdd = {
   arm: string;
   createdAt: string;
 };
+
+type PendingAddV2 = {
+  schemaVersion: 2;
+  kind: "add";
+  handoffId: string;
+  identitySha256: string;
+  state: "pending";
+  rawRef: string;
+  rawSha256: string;
+  suggestedMemoryRef: string;
+  source: AddProvenance;
+  createdAt: string;
+  title: string;
+  urlReference: boolean;
+  arm: string;
+};
+
+type CompletedAddV2 = Omit<PendingAddV2, "state"> & {
+  state: "completed";
+  completedAt: string;
+  outcome: "derived" | "raw-only";
+  memories?: string[];
+  reason?: string;
+};
+
+type PendingAdd = LegacyPendingAdd | PendingAddV2;
 
 type PendingReflect = {
   schemaVersion: 1;
@@ -1265,8 +1747,16 @@ type HandoffInspection = {
   invalidMetadata: string[];
 };
 
-function pendingAddPath(kbPath: string, rawRef: string): string {
+function legacyPendingAddPath(kbPath: string, rawRef: string): string {
   return join(kbPath, ".kb", "pending", "add", `${shortHash(rawRef)}.json`);
+}
+
+function pendingAddV2Path(kbPath: string, handoffId: string): string {
+  return join(kbPath, ".kb", "pending", "add", `${handoffId}.json`);
+}
+
+function completedAddV2Path(kbPath: string, handoffId: string): string {
+  return join(kbPath, ".kb", "completed", "add", `${handoffId}.json`);
 }
 
 function pendingReflectPath(kbPath: string): string {
@@ -1288,19 +1778,711 @@ async function writeTextAtomic(path: string, value: string): Promise<void> {
   }
 }
 
-async function writePendingAdd(kbPath: string, record: PendingAdd): Promise<void> {
-  await writeJsonAtomic(pendingAddPath(kbPath, record.rawRef), record);
+type PreparedAddSource = {
+  rawFile: string;
+  memoryFile: string;
+  title: string;
+  urlReference: boolean;
+  bytes: Buffer;
+  rawSha256: string;
+};
+
+type LoadedAddHandoff = {
+  record: PendingAddV2;
+  completed: CompletedAddV2 | null;
+  pendingPath: string | null;
+};
+
+function validateAddInvocation(
+  args: string[],
+  resumeRef: string | null,
+  complete: boolean,
+  options: AddCommandOptions,
+): void {
+  const hasProducer = options.source !== null || options.sourceId !== null;
+  if ((options.source === null) !== (options.sourceId === null)) {
+    throw new AddCommandError("INVALID_PROVENANCE", "--source and --source-id must appear together", EXIT_USAGE);
+  }
+  if (options.source !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(options.source)) {
+    throw new AddCommandError(
+      "INVALID_SOURCE",
+      "--source must start with a letter or number and contain only letters, numbers, dot, dash, or underscore",
+      EXIT_USAGE,
+    );
+  }
+  if (options.sourceId !== null
+    && (options.sourceId.length === 0 || !isSingleLine(options.sourceId) || !isUtf8RoundTrip(options.sourceId))) {
+    throw new AddCommandError("INVALID_SOURCE_ID", "--source-id must be non-empty, single-line UTF-8", EXIT_USAGE);
+  }
+  if (options.capturedAt !== null) {
+    normalizeRfc3339(options.capturedAt);
+  }
+
+  const completionFlags = options.memories.length > 0 || options.noMemory || options.reason !== null;
+  const provenanceFlags = hasProducer || options.capturedAt !== null;
+  if (resumeRef !== null) {
+    if (complete || args.length !== 0 || completionFlags || provenanceFlags) {
+      throw new AddCommandError("INVALID_USAGE", "usage: kb add --resume <handoff-id> [--json] [--in <name>]", EXIT_USAGE);
+    }
+    return;
+  }
+
+  if (!complete) {
+    if (args.length !== 1 || completionFlags) {
+      throw new AddCommandError("INVALID_USAGE", "usage: kb add <file-or-url>", EXIT_USAGE);
+    }
+    return;
+  }
+
+  if (provenanceFlags) {
+    throw new AddCommandError("INVALID_USAGE", "producer flags are only valid when staging an Add", EXIT_USAGE);
+  }
+  const legacyPositional = args.length === 2 && options.memories.length === 0
+    && !options.noMemory && options.reason === null;
+  const modern = args.length === 1;
+  if (!legacyPositional && !modern) {
+    throw new AddCommandError("INVALID_USAGE", "usage: kb add --complete <handoff-id> --memory <memories/ref.md>", EXIT_USAGE);
+  }
+  if (legacyPositional) {
+    return;
+  }
+  if (options.memories.length > 0 && options.noMemory) {
+    throw new AddCommandError("INVALID_COMPLETION", "--memory and --no-memory are mutually exclusive", EXIT_USAGE);
+  }
+  if (options.noMemory) {
+    if (options.reason === null || options.reason.length === 0) {
+      throw new AddCommandError("INVALID_COMPLETION", "--reason is required with --no-memory", EXIT_USAGE);
+    }
+    if (!isSingleLine(options.reason) || !isUtf8RoundTrip(options.reason) || Array.from(options.reason).length > 500) {
+      throw new AddCommandError(
+        "INVALID_COMPLETION",
+        "--reason must be single-line UTF-8 and no more than 500 characters",
+        EXIT_USAGE,
+      );
+    }
+    return;
+  }
+  if (options.reason !== null) {
+    throw new AddCommandError("INVALID_COMPLETION", "--reason is only valid with --no-memory", EXIT_USAGE);
+  }
+  if (options.memories.length === 0) {
+    throw new AddCommandError("INVALID_COMPLETION", "completion requires --memory or --no-memory", EXIT_USAGE);
+  }
 }
 
-async function readPendingAdd(kbPath: string, rawRef: string): Promise<PendingAdd | null> {
+function isUtf8RoundTrip(value: string): boolean {
+  return Buffer.from(value, "utf8").toString("utf8") === value;
+}
+
+function normalizeRfc3339(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    throw new AddCommandError("INVALID_CAPTURED_AT", "--captured-at must be RFC3339", EXIT_USAGE);
+  }
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new AddCommandError("INVALID_CAPTURED_AT", "--captured-at must be RFC3339", EXIT_USAGE);
+  }
+  return parsed.toISOString();
+}
+
+function normalizeAddProvenance(options: AddCommandOptions): AddProvenance {
+  return {
+    name: options.source,
+    id: options.sourceId,
+    capturedAt: options.capturedAt === null ? null : normalizeRfc3339(options.capturedAt),
+  };
+}
+
+function addIdentitySha256(rawSha256: string, source: AddProvenance): string {
+  const identity = source.name === null
+    ? `kb-add-v1\0sha256:${rawSha256}`
+    : `kb-add-v1\0${source.name}\0${source.id}`;
+  return createHash("sha256").update(identity).digest("hex");
+}
+
+async function prepareFileSource(input: string): Promise<PreparedAddSource> {
+  const sourcePath = resolve(input);
   try {
-    return JSON.parse(await readFile(pendingAddPath(kbPath, rawRef), "utf8")) as PendingAdd;
+    const metadata = await stat(sourcePath);
+    if (!metadata.isFile()) {
+      throw new AddCommandError("INVALID_SOURCE", `source is not a file: ${input}`, EXIT_USAGE);
+    }
+    const bytes = await readFile(sourcePath);
+    const parsed = parse(sourcePath);
+    const identity = sourceMemoryIdentity(parsed.name);
+    const rawSha256 = sha256(bytes);
+    return {
+      rawFile: `${slugify(parsed.name)}-${rawSha256.slice(0, 12)}${parsed.ext}`,
+      memoryFile: `${identity.memoryStem}.md`,
+      title: identity.title,
+      urlReference: false,
+      bytes,
+      rawSha256,
+    };
   } catch (error) {
+    if (error instanceof AddCommandError) throw error;
     if (isNodeError(error) && error.code === "ENOENT") {
-      return null;
+      throw new AddCommandError("INVALID_SOURCE", `source not found: ${input}`, EXIT_USAGE);
+    }
+    if (isNodeError(error) && (error.code === "EACCES" || error.code === "EPERM")) {
+      throw new AddCommandError("INVALID_SOURCE", `cannot read source: ${input}`, EXIT_USAGE);
     }
     throw error;
   }
+}
+
+function prepareUrlReference(url: string): PreparedAddSource {
+  const parsed = new URL(url);
+  const slug = slugify(`${parsed.hostname}${parsed.pathname}`);
+  const bytes = Buffer.from(`# URL Reference\n\nurl: ${url}\n\nv1 behavior: this is a URL reference only, not a full HTML archive.\n`);
+  const rawSha256 = sha256(bytes);
+  return {
+    rawFile: `${slug}-${rawSha256.slice(0, 12)}.url.md`,
+    memoryFile: `${slug}.md`,
+    title: titleFromSlug(slug),
+    urlReference: true,
+    bytes,
+    rawSha256,
+  };
+}
+
+function sha256(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function writeRawAtomicIfMissing(kbPath: string, rawFile: string, bytes: Buffer): Promise<boolean> {
+  const path = join(kbPath, "raw", rawFile);
+  const temp = `${path}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  await writeFile(temp, bytes, { flag: "wx", mode: 0o600 });
+  try {
+    await link(temp, path);
+    return true;
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+    const existing = await readFile(path);
+    if (sha256(existing) !== sha256(bytes)) {
+      throw new AddCommandError("RAW_PATH_CONFLICT", `raw path already contains different bytes: raw/${rawFile}`, EXIT_DATAERR);
+    }
+    return false;
+  } finally {
+    await rm(temp, { force: true });
+  }
+}
+
+async function writePendingAddV2(kbPath: string, record: PendingAddV2): Promise<void> {
+  await writeJsonAtomic(pendingAddV2Path(kbPath, record.handoffId), record);
+}
+
+async function appendIngressLogOnce(kbPath: string, record: PendingAddV2): Promise<void> {
+  const logPath = join(kbPath, "log.md");
+  const log = await readFile(logPath, "utf8");
+  const marker = `\"handoffId\":\"${record.handoffId}\"`;
+  if (log.includes(marker)) return;
+  const event = {
+    handoffId: record.handoffId,
+    rawRef: record.rawRef,
+    rawSha256: record.rawSha256,
+    source: record.source.name,
+    sourceId: record.source.id,
+    capturedAt: record.source.capturedAt,
+    ingestedAt: record.createdAt,
+  };
+  await appendFile(
+    logPath,
+    `## [${record.createdAt.slice(0, 10)}] add | ${basename(record.rawRef)} | add-ingress ${JSON.stringify(event)}\n`,
+  );
+}
+
+type AddIngressLogEvent = {
+  handoffId: string;
+  rawRef: string;
+  rawSha256: string;
+  source: string | null;
+  sourceId: string | null;
+  capturedAt: string | null;
+  ingestedAt: string;
+};
+
+async function readIngressLogEvent(kbPath: string, handoffId: string): Promise<AddIngressLogEvent | null> {
+  const lines = (await readFile(join(kbPath, "log.md"), "utf8")).split("\n");
+  const matches = lines.filter((line) => line.includes(`\"handoffId\":\"${handoffId}\"`));
+  if (matches.length === 0) return null;
+  if (matches.length !== 1) {
+    throw new AddCommandError("MALFORMED_STATE", `ingress log contains duplicate events for ${handoffId}`, EXIT_DATAERR);
+  }
+  const jsonStart = matches[0].indexOf("add-ingress ");
+  if (jsonStart < 0) throw new AddCommandError("MALFORMED_STATE", `invalid ingress log event for ${handoffId}`, EXIT_DATAERR);
+  try {
+    const value = JSON.parse(matches[0].slice(jsonStart + "add-ingress ".length)) as unknown;
+    if (!isRecord(value) || value.handoffId !== handoffId || typeof value.rawRef !== "string"
+      || typeof value.rawSha256 !== "string" || !isNullableString(value.source)
+      || !isNullableString(value.sourceId) || !isNullableString(value.capturedAt)
+      || typeof value.ingestedAt !== "string") {
+      throw new Error("invalid");
+    }
+    return value as AddIngressLogEvent;
+  } catch {
+    throw new AddCommandError("MALFORMED_STATE", `invalid ingress log event for ${handoffId}`, EXIT_DATAERR);
+  }
+}
+
+async function loadAddHandoff(kbPath: string, ref: string): Promise<LoadedAddHandoff | null> {
+  if (/^add-[a-f0-9]{24}$/.test(ref)) {
+    return loadAddById(kbPath, ref);
+  }
+  if (!isKbRef(kbPath, ref, "raw")) return null;
+  const candidates = await findAddsByRawRef(kbPath, ref);
+  if (candidates.length > 1) {
+    throw new AddCommandError("AMBIGUOUS_HANDOFF", `raw ref identifies more than one Add handoff: ${ref}`, EXIT_DATAERR);
+  }
+  return candidates[0] ?? null;
+}
+
+async function loadAddById(kbPath: string, handoffId: string): Promise<LoadedAddHandoff | null> {
+  const pendingPath = pendingAddV2Path(kbPath, handoffId);
+  const completedPath = completedAddV2Path(kbPath, handoffId);
+  const [pendingValue, completedValue] = await Promise.all([
+    readJsonState(pendingPath),
+    readJsonState(completedPath),
+  ]);
+  const pending = pendingValue === null ? null : parsePendingAddV2(pendingValue, stateRef(kbPath, pendingPath));
+  const completed = completedValue === null ? null : parseCompletedAddV2(completedValue, stateRef(kbPath, completedPath));
+  if (pending === null && completed === null) return null;
+  if (completed !== null) {
+    if (pending !== null && (pending.identitySha256 !== completed.identitySha256 || pending.rawSha256 !== completed.rawSha256)) {
+      throw malformedState(stateRef(kbPath, completedPath));
+    }
+    if (pending !== null) await rm(pendingPath, { force: true });
+    return { record: { ...completed, state: "pending" }, completed, pendingPath: null };
+  }
+  return { record: pending!, completed: null, pendingPath };
+}
+
+async function findAddsByRawRef(kbPath: string, rawRef: string): Promise<LoadedAddHandoff[]> {
+  const results: LoadedAddHandoff[] = [];
+  for (const state of ["pending", "completed"] as const) {
+    const dir = join(kbPath, ".kb", state, "add");
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      const path = join(dir, entry.name);
+      const ref = stateRef(kbPath, path);
+      const value = await readJsonState(path);
+      if (value === null) continue;
+      if (state === "completed") {
+        const completed = parseCompletedAddV2(value, ref);
+        if (completed.rawRef === rawRef) {
+          results.push({ record: { ...completed, state: "pending" }, completed, pendingPath: null });
+        }
+        continue;
+      }
+      if (isLegacyPendingAdd(value)) {
+        if (value.rawRef === rawRef) {
+          results.push({ record: await normalizeLegacyPendingAdd(kbPath, value), completed: null, pendingPath: path });
+        }
+        continue;
+      }
+      const pending = parsePendingAddV2(value, ref);
+      if (pending.rawRef === rawRef) results.push({ record: pending, completed: null, pendingPath: path });
+    }
+  }
+  const byId = new Map<string, LoadedAddHandoff>();
+  for (const result of results) {
+    const current = byId.get(result.record.handoffId);
+    if (current === undefined || result.completed !== null) byId.set(result.record.handoffId, result);
+  }
+  return [...byId.values()];
+}
+
+async function readJsonState(path: string): Promise<unknown | null> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return null;
+    if (error instanceof SyntaxError) throw malformedState(path);
+    throw error;
+  }
+}
+
+function stateRef(kbPath: string, path: string): string {
+  return path.startsWith(`${kbPath}/`) ? path.slice(kbPath.length + 1) : path;
+}
+
+function malformedState(path: string): AddCommandError {
+  const marker = "/.kb/";
+  const index = path.indexOf(marker);
+  const displayPath = index < 0 ? path : path.slice(index + 1);
+  return new AddCommandError("MALFORMED_STATE", `malformed Add state: ${displayPath}`, EXIT_DATAERR);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isLegacyPendingAdd(value: unknown): value is LegacyPendingAdd {
+  return isRecord(value) && value.schemaVersion === 1 && value.kind === "add"
+    && typeof value.rawRef === "string" && typeof value.suggestedMemoryRef === "string"
+    && typeof value.title === "string" && typeof value.urlReference === "boolean"
+    && typeof value.arm === "string" && typeof value.createdAt === "string";
+}
+
+function parsePendingAddV2(value: unknown, path: string): PendingAddV2 {
+  if (!isRecord(value) || value.schemaVersion !== 2 || value.kind !== "add" || value.state !== "pending"
+    || typeof value.handoffId !== "string" || !/^add-[a-f0-9]{24}$/.test(value.handoffId)
+    || typeof value.identitySha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.identitySha256)
+    || typeof value.rawRef !== "string" || typeof value.rawSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.rawSha256)
+    || typeof value.suggestedMemoryRef !== "string" || !isRecord(value.source)
+    || !isNullableString(value.source.name) || !isNullableString(value.source.id)
+    || !isNullableString(value.source.capturedAt) || typeof value.createdAt !== "string"
+    || typeof value.title !== "string" || typeof value.urlReference !== "boolean" || typeof value.arm !== "string") {
+    throw malformedState(path);
+  }
+  return value as PendingAddV2;
+}
+
+function parseCompletedAddV2(value: unknown, path: string): CompletedAddV2 {
+  if (!isRecord(value) || value.state !== "completed" || typeof value.completedAt !== "string"
+    || (value.outcome !== "derived" && value.outcome !== "raw-only")) {
+    throw malformedState(path);
+  }
+  const pending = parsePendingAddV2({ ...value, state: "pending" }, path);
+  if (value.outcome === "derived" && (!Array.isArray(value.memories) || !value.memories.every((ref) => typeof ref === "string"))) {
+    throw malformedState(path);
+  }
+  if (value.outcome === "raw-only" && typeof value.reason !== "string") throw malformedState(path);
+  return value as CompletedAddV2;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+async function normalizeLegacyPendingAdd(kbPath: string, legacy: LegacyPendingAdd): Promise<PendingAddV2> {
+  const path = join(kbPath, legacy.rawRef);
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(path);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new AddCommandError("RAW_TAMPERED", `raw source is missing: ${legacy.rawRef}`, EXIT_DATAERR);
+    }
+    throw error;
+  }
+  const rawSha256 = sha256(bytes);
+  const source: AddProvenance = { name: null, id: null, capturedAt: null };
+  const identitySha256 = addIdentitySha256(rawSha256, source);
+  return {
+    schemaVersion: 2,
+    kind: "add",
+    handoffId: `add-${identitySha256.slice(0, 24)}`,
+    identitySha256,
+    state: "pending",
+    rawRef: legacy.rawRef,
+    rawSha256,
+    suggestedMemoryRef: legacy.suggestedMemoryRef,
+    source,
+    createdAt: legacy.createdAt,
+    title: legacy.title,
+    urlReference: legacy.urlReference,
+    arm: legacy.arm,
+  };
+}
+
+async function verifyRawIntegrity(kbPath: string, record: PendingAddV2): Promise<void> {
+  if (!isKbRef(kbPath, record.rawRef, "raw")) {
+    throw new AddCommandError("RAW_TAMPERED", `raw ref escapes raw/: ${record.rawRef}`, EXIT_DATAERR);
+  }
+  try {
+    const actual = sha256(await readFile(join(kbPath, record.rawRef)));
+    if (actual !== record.rawSha256) {
+      throw new AddCommandError("RAW_TAMPERED", `raw source hash mismatch: ${record.rawRef}`, EXIT_DATAERR);
+    }
+  } catch (error) {
+    if (error instanceof AddCommandError) throw error;
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new AddCommandError("RAW_TAMPERED", `raw source is missing: ${record.rawRef}`, EXIT_DATAERR);
+    }
+    throw error;
+  }
+}
+
+async function completeAddHandoff(
+  target: { name: string; path: string },
+  args: string[],
+  options: AddCommandOptions,
+): Promise<number> {
+  const legacyPositional = args.length === 2;
+  const lookupRef = args[0];
+  const memoryInputs = legacyPositional ? [args[1]] : options.memories;
+  const intent = options.noMemory
+    ? { outcome: "raw-only" as const, reason: options.reason! }
+    : { outcome: "derived" as const, memories: normalizeMemoryRefs(target.path, memoryInputs) };
+  const loaded = await loadAddHandoff(target.path, lookupRef);
+  if (loaded === null) {
+    throw new AddCommandError("HANDOFF_NOT_FOUND", `no Add handoff for ${lookupRef}`, EXIT_USAGE);
+  }
+  await verifyRawIntegrity(target.path, loaded.record);
+
+  if (loaded.completed !== null) {
+    if (!completionMatches(loaded.completed, intent)) {
+      throw new AddCommandError(
+        "COMPLETION_CONFLICT",
+        `Add handoff ${loaded.record.handoffId} already has a different completion outcome`,
+        EXIT_DATAERR,
+      );
+    }
+    return finishCompletedAddResponse(
+      target,
+      loaded.completed,
+      true,
+      legacyPositional,
+      lookupRef,
+      options.json,
+      false,
+    );
+  }
+
+  if (intent.outcome === "derived") {
+    await verifyDerivativeCompletion(target.path, loaded.record, intent.memories);
+  }
+  const completed: CompletedAddV2 = {
+    ...loaded.record,
+    state: "completed",
+    completedAt: nowInstant(),
+    ...intent,
+  };
+  await writeJsonAtomic(completedAddV2Path(target.path, completed.handoffId), completed);
+  if (loaded.pendingPath !== null) await rm(loaded.pendingPath, { force: true });
+  await appendCompletionLogOnce(target.path, completed);
+  return finishCompletedAddResponse(target, completed, false, legacyPositional, lookupRef, options.json, true);
+}
+
+async function finishCompletedAddResponse(
+  target: { name: string; path: string },
+  completed: CompletedAddV2,
+  replayed: boolean,
+  legacyPositional: boolean,
+  lookupRef: string,
+  json: boolean,
+  refreshNow: boolean,
+): Promise<number> {
+  const config = await readKbConfig(target.path);
+  const text = completionText({ ...completed, state: "pending" }, completed, legacyPositional, lookupRef);
+  if (config.engineState !== "enabled" || config.engineProject === null) {
+    writeAddSuccess(target, completedAddResult(completed, replayed), json, text);
+    return 0;
+  }
+
+  const dirty = await exists(engineDirtyPath(target.path));
+  if (!refreshNow && !dirty) {
+    writeAddSuccess(
+      target,
+      { ...completedAddResult(completed, replayed), handoffCompleted: true, engineRefresh: "current" },
+      json,
+      text,
+    );
+    return 0;
+  }
+
+  await markEngineDirty(target.path, completed.handoffId);
+  const refreshed = await new BasicMemoryAdapter().reindex(target.path, config.engineProject);
+  if (refreshed.ok === false) {
+    writeAddSuccess(
+      target,
+      { ...completedAddResult(completed, replayed), handoffCompleted: true, engineRefresh: "pending" },
+      json,
+      text,
+    );
+    writeError(`Add handoff ${completed.handoffId} completed, but Engine refresh is pending. ${refreshed.message}`);
+    return refreshed.exitCode ?? EXIT_UNAVAILABLE;
+  }
+  await clearEngineDirty(target.path);
+  writeAddSuccess(
+    target,
+    { ...completedAddResult(completed, replayed), handoffCompleted: true, engineRefresh: "current" },
+    json,
+    text,
+  );
+  return 0;
+}
+
+function normalizeMemoryRefs(kbPath: string, refs: string[]): string[] {
+  const normalized = refs.map((ref) => {
+    if (!isKbRef(kbPath, ref, "memories")) {
+      throw new AddCommandError("INVALID_MEMORY_REF", `Memory ref must resolve under memories/: ${ref}`, EXIT_USAGE);
+    }
+    const path = resolve(kbPath, ref);
+    return `memories/${path.slice(resolve(kbPath, "memories").length + 1)}`;
+  });
+  return [...new Set(normalized)].sort();
+}
+
+async function verifyDerivativeCompletion(
+  kbPath: string,
+  record: PendingAddV2,
+  memoryRefs: string[],
+): Promise<void> {
+  const indexRefs = indexEntryLines(await readFile(join(kbPath, "index.md"), "utf8"))
+    .map((line) => parseIndexLine(line)?.ref)
+    .filter((ref): ref is string => ref !== undefined);
+  for (const memoryRef of memoryRefs) {
+    let text: string;
+    try {
+      text = await readFile(join(kbPath, memoryRef), "utf8");
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        throw new AddCommandError("INVALID_COMPLETION", `cannot complete Add: Memory not found: ${memoryRef}`, EXIT_DATAERR);
+      }
+      throw error;
+    }
+    if (isUntouchedDraft(text)) {
+      throw new AddCommandError("INVALID_COMPLETION", `cannot complete Add: Memory is an untouched TODO draft: ${memoryRef}`, EXIT_DATAERR);
+    }
+    if (!frontmatterSourceRefs(text).includes(record.rawRef)) {
+      throw new AddCommandError(
+        "MISSING_SOURCE_REF",
+        `cannot complete Add: ${memoryRef} does not cite ${record.rawRef} in source_refs`,
+        EXIT_DATAERR,
+      );
+    }
+    const count = indexRefs.filter((ref) => ref === memoryRef).length;
+    if (count !== 1) {
+      throw new AddCommandError(
+        "INVALID_INDEX_ENTRY",
+        `cannot complete Add: index.md must reference ${memoryRef} exactly once (found ${count})`,
+        EXIT_DATAERR,
+      );
+    }
+  }
+}
+
+function frontmatterSourceRefs(text: string): string[] {
+  if (!text.startsWith("---\n")) return [];
+  const end = text.indexOf("\n---", 4);
+  if (end < 0) return [];
+  const lines = text.slice(4, end).split("\n");
+  const refs: string[] = [];
+  let inSourceRefs = false;
+  for (const line of lines) {
+    if (/^source_refs:\s*$/.test(line)) {
+      inSourceRefs = true;
+      continue;
+    }
+    if (inSourceRefs && /^[A-Za-z0-9_-]+:/.test(line)) break;
+    const match = inSourceRefs ? /^\s+-\s+(.+?)\s*$/.exec(line) : null;
+    if (match?.[1] !== undefined) refs.push(match[1].replace(/^(?:"(.*)"|'(.*)')$/, "$1$2"));
+  }
+  return refs;
+}
+
+function completionMatches(
+  completed: CompletedAddV2,
+  intent: { outcome: "derived"; memories: string[] } | { outcome: "raw-only"; reason: string },
+): boolean {
+  if (completed.outcome !== intent.outcome) return false;
+  if (intent.outcome === "raw-only") return completed.reason === intent.reason;
+  return JSON.stringify(completed.memories ?? []) === JSON.stringify(intent.memories);
+}
+
+async function appendCompletionLogOnce(kbPath: string, completed: CompletedAddV2): Promise<void> {
+  const logPath = join(kbPath, "log.md");
+  const log = await readFile(logPath, "utf8");
+  const marker = `handoff-complete:${completed.handoffId}`;
+  if (log.includes(marker)) return;
+  const detail = completed.outcome === "derived" ? completed.memories!.join(",") : completed.reason!;
+  await appendFile(logPath, `## [${completed.completedAt.slice(0, 10)}] ${marker} | ${completed.outcome} | ${detail}\n`);
+}
+
+function addProvenanceResult(record: PendingAddV2): Record<string, string | null> {
+  return {
+    source: record.source.name,
+    sourceId: record.source.id,
+    capturedAt: record.source.capturedAt,
+    ingestedAt: record.createdAt,
+  };
+}
+
+function pendingAddResult(
+  record: PendingAddV2,
+  replayed: boolean,
+  rawCreated: boolean,
+  playbook: string,
+): Record<string, unknown> {
+  return {
+    state: "pending",
+    replayed,
+    handoffId: record.handoffId,
+    raw: { ref: record.rawRef, sha256: record.rawSha256, created: rawCreated },
+    provenance: addProvenanceResult(record),
+    suggestedMemoryRef: record.suggestedMemoryRef,
+    requiresAgent: true,
+    resumeCommand: `kb add --resume ${record.handoffId} --in __KB_NAME__`,
+    completeCommandTemplate: `kb add --complete ${record.handoffId} --memory <memories/ref.md> --in __KB_NAME__`,
+    playbook,
+  };
+}
+
+function completedAddResult(record: CompletedAddV2, replayed: boolean): Record<string, unknown> {
+  return {
+    state: "completed",
+    replayed,
+    handoffId: record.handoffId,
+    raw: { ref: record.rawRef, sha256: record.rawSha256, created: false },
+    provenance: addProvenanceResult({ ...record, state: "pending" }),
+    outcome: record.outcome,
+    ...(record.outcome === "derived" ? { memories: record.memories } : { reason: record.reason }),
+    requiresAgent: false,
+  };
+}
+
+function writeAddSuccess(
+  target: { name: string; path: string },
+  result: Record<string, unknown>,
+  json: boolean,
+  text: string | undefined = undefined,
+): void {
+  if (json) {
+    const renderedResult = JSON.parse(JSON.stringify(result).replaceAll("__KB_NAME__", target.name)) as Record<string, unknown>;
+    process.stdout.write(`${JSON.stringify({
+      schemaVersion: 1,
+      ok: true,
+      command: "add",
+      kb: { name: target.name, path: target.path },
+      result: renderedResult,
+    })}\n`);
+    return;
+  }
+  if (text !== undefined) process.stdout.write(text);
+}
+
+function writeAddError(error: AddCommandError, json: boolean): void {
+  if (json) {
+    process.stderr.write(`${JSON.stringify({
+      schemaVersion: 1,
+      ok: false,
+      command: "add",
+      error: { code: error.code, message: error.message },
+    })}\n`);
+    return;
+  }
+  writeError(error.message);
+}
+
+function completionText(
+  record: PendingAddV2,
+  completed: CompletedAddV2,
+  legacyPositional: boolean,
+  lookupRef: string,
+): string {
+  const subject = legacyPositional ? lookupRef : record.handoffId;
+  const outcome = completed.outcome === "derived" ? completed.memories!.join(", ") : `raw-only: ${completed.reason}`;
+  return `Completed Add handoff: ${subject} -> ${outcome}\n`;
 }
 
 async function readPendingReflect(kbPath: string): Promise<PendingReflect | null> {
@@ -1332,9 +2514,9 @@ async function inspectHandoffs(kbPath: string): Promise<HandoffInspection> {
       }
       const ref = `.kb/pending/add/${entry.name}`;
       try {
-        const record = JSON.parse(await readFile(join(addDir, entry.name), "utf8")) as PendingAdd;
-        if (record.schemaVersion !== 1 || record.kind !== "add" || typeof record.rawRef !== "string"
-          || typeof record.suggestedMemoryRef !== "string") {
+        const value = JSON.parse(await readFile(join(addDir, entry.name), "utf8")) as unknown;
+        const record = isLegacyPendingAdd(value) ? value : parsePendingAddV2(value, ref);
+        if (record.kind !== "add" || typeof record.rawRef !== "string" || typeof record.suggestedMemoryRef !== "string") {
           invalidMetadata.push(ref);
           continue;
         }
@@ -1403,73 +2585,6 @@ function hasUnfinishedWork(inspection: HandoffInspection): boolean {
     || inspection.invalidMetadata.length > 0;
 }
 
-async function stageFileSource(kbPath: string, input: string): Promise<StagedSource | null> {
-  const sourcePath = resolve(input);
-  try {
-    const metadata = await stat(sourcePath);
-    if (!metadata.isFile()) {
-      writeError(`source is not a file: ${input}`);
-      return null;
-    }
-    const bytes = await readFile(sourcePath);
-    const parsed = parse(sourcePath);
-    const identity = sourceMemoryIdentity(parsed.name);
-    const hash = shortHash(bytes);
-    const rawFile = `${slugify(parsed.name)}-${hash}${parsed.ext}`;
-    const created = await writeRawIfMissing(kbPath, rawFile, bytes);
-    return {
-      rawFile,
-      memoryFile: `${identity.memoryStem}.md`,
-      title: identity.title,
-      urlReference: false,
-      created,
-    };
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      writeError(`source not found: ${input}`);
-      return null;
-    }
-    if (isNodeError(error) && (error.code === "EACCES" || error.code === "EPERM")) {
-      writeError(`cannot read source: ${input}`);
-      return null;
-    }
-    throw error;
-  }
-}
-
-async function stageUrlReference(kbPath: string, url: string): Promise<StagedSource> {
-  const parsed = new URL(url);
-  const slug = slugify(`${parsed.hostname}${parsed.pathname}`);
-  const rawFile = `${slug}-${shortHash(url)}.url.md`;
-  const content = `# URL Reference
-
-url: ${url}
-
-v1 behavior: this is a URL reference only, not a full HTML archive.
-`;
-  const created = await writeRawIfMissing(kbPath, rawFile, content);
-  return {
-    rawFile,
-    memoryFile: `${slug}.md`,
-    title: titleFromSlug(slug),
-    urlReference: true,
-    created,
-  };
-}
-
-async function writeRawIfMissing(kbPath: string, rawFile: string, content: string | Buffer): Promise<boolean> {
-  const path = join(kbPath, "raw", rawFile);
-  try {
-    await writeFile(path, content, { flag: "wx" });
-    return true;
-  } catch (error) {
-    if (isNodeError(error) && error.code === "EEXIST") {
-      return false;
-    }
-    throw error;
-  }
-}
-
 async function appendLogEntry(kbPath: string, verb: string, title: string): Promise<void> {
   await appendFile(join(kbPath, "log.md"), `## [${todayIso()}] ${verb} | ${title}\n`);
 }
@@ -1527,6 +2642,18 @@ engine:
     project: ${config.engineProject ?? "null"}
 lastReflectAt: ${config.lastReflectAt ?? "null"}
 `);
+}
+
+function engineDirtyPath(kbPath: string): string {
+  return join(kbPath, ".kb", "engine-dirty");
+}
+
+async function markEngineDirty(kbPath: string, handoffId: string): Promise<void> {
+  await writeTextAtomic(engineDirtyPath(kbPath), `${JSON.stringify({ schemaVersion: 1, handoffId, markedAt: nowInstant() })}\n`);
+}
+
+async function clearEngineDirty(kbPath: string): Promise<void> {
+  await rm(engineDirtyPath(kbPath), { force: true });
 }
 
 function readYamlScalar(text: string, key: string): string | null {
@@ -1876,6 +3003,9 @@ function renderCandidateLines(lines: string[]): string {
 }
 
 function renderPendingAddPlaybook(record: PendingAdd, targetName: string): string {
+  if (record.schemaVersion === 2) {
+    return addHandoffV2Playbook(record, targetName);
+  }
   const staged: StagedSource = {
     rawFile: record.rawRef.replace(/^raw\//, ""),
     memoryFile: record.suggestedMemoryRef.replace(/^memories\//, ""),
@@ -1886,6 +3016,35 @@ function renderPendingAddPlaybook(record: PendingAdd, targetName: string): strin
   return record.arm === "wiki"
     ? wikiIngestPlaybook(staged, targetName)
     : ingestPlaybook(staged, targetName);
+}
+
+function addHandoffV2Playbook(record: PendingAddV2, targetName: string): string {
+  const urlBehavior = record.urlReference
+    ? "v1 stages a URL reference only; full HTML archiving is deferred."
+    : "local file copied verbatim into raw/.";
+  const heading = record.arm === "wiki" ? "Wiki add playbook" : "Add playbook";
+  return `${heading}
+Handoff ID: ${record.handoffId}
+Raw source: ${record.rawRef}
+Suggested Memory target: ${record.suggestedMemoryRef}
+URL behavior: ${urlBehavior}
+
+Agent half:
+1. Read ${record.rawRef} without modifying it.
+2. Inspect index.md, existing Memories, and search results before choosing an outcome.
+3. Treat ${record.suggestedMemoryRef} as a filename hint, not a semantic route.
+4. Choose whether to update, create, split, or close this handoff raw-only.
+5. Use a meaningful domain type only when the artifact and established conventions support it; do not invent a schema or folder hierarchy from one artifact.
+6. Add ${record.rawRef} to each affected Memory's source_refs without deleting prior refs.
+7. Add or update exactly one index.md catalog entry per affected Memory; for the suggested filename, the title hint is: ${indexLine(record.suggestedMemoryRef, record.title)}
+8. Complete with one or more Memories:
+   kb add --complete ${record.handoffId} --memory <memories/ref.md> --in ${targetName}
+9. Or close raw-only with a durable reason:
+   kb add --complete ${record.handoffId} --no-memory --reason <single-line-reason> --in ${targetName}
+
+If this output is lost, run:
+  kb add --resume ${record.handoffId} --in ${targetName}
+`;
 }
 
 function ingestPlaybook(staged: StagedSource, targetName: string): string {
@@ -2138,9 +3297,14 @@ function renderUnfinishedWork(targetName: string, inspection: HandoffInspection)
         : state === "index-missing"
           ? `Memory not cataloged: ${record.suggestedMemoryRef}`
           : "Ready for completion confirmation";
-    lines.push(`- Add: ${record.rawRef}`);
+    const handoffRef = record.schemaVersion === 2 ? record.handoffId : record.rawRef;
+    lines.push(`- Add: ${handoffRef}`);
+    lines.push(`  Raw source: ${record.rawRef}`);
     lines.push(`  State: ${stateText}`);
-    lines.push(`  Resume: kb add --resume ${record.rawRef} --in ${targetName}`);
+    lines.push(`  Resume: kb add --resume ${handoffRef} --in ${targetName}`);
+    if (record.schemaVersion === 2) {
+      lines.push(`  Resume: kb add --resume ${record.rawRef} --in ${targetName} (legacy raw-ref compatibility)`);
+    }
   }
   for (const ref of inspection.drafts) {
     lines.push(`- Draft: ${ref}`);

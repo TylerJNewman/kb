@@ -52,7 +52,7 @@ test("identical adds are truthful idempotent replays with one audit event", asyn
   expect(second).toEqual({
     code: 0,
     stderr: "",
-    stdout: `Raw source already present: raw/source-48b972e2f225.txt\n\n${first.stdout}`,
+    stdout: expect.stringMatching(/^Raw source already present: raw\/source-48b972e2f225\.txt\nReplaying pending Add: add-[a-f0-9]{24}\n\nAdd playbook\n/),
   });
   expect(await readdir(join(kbDir, "raw"))).toEqual(["source-48b972e2f225.txt"]);
   const log = await readFile(join(kbDir, "log.md"), "utf8");
@@ -111,7 +111,15 @@ test("an abandoned Add is durable, visible, resumable, and explicitly completabl
   expect(resumed.stdout).toContain("Resuming pending Add");
   expect(resumed.stdout).toContain("Memory target: memories/one.md");
 
-  await writeFile(join(kbDir, "memories", "one.md"), "---\ntitle: One\npermalink: one\n---\n\n# One\n");
+  await writeFile(join(kbDir, "memories", "one.md"), `---
+title: One
+permalink: one
+source_refs:
+  - ${rawRef}
+---
+
+# One
+`);
   await appendFile(
     join(kbDir, "index.md"),
     "\n- [[memories/one.md|One]] | category: source | summary: One source\n",
@@ -286,8 +294,9 @@ lastReflectAt: null
 test("concurrent enable search callers execute one Engine transaction", async () => {
   await createResearchKb();
   await harness.writeFakeExecutable("bm", `#!/bin/sh
-if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "project" ]; then echo project-add >> "$HOME/engine-calls"; /bin/sleep 0.1; exit 0; fi
+if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then echo '{"projects":[]}'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then echo project-add >> "$HOME/engine-calls"; /bin/sleep 0.1; exit 0; fi
 if [ "$1" = "reindex" ]; then echo reindex >> "$HOME/engine-calls"; /bin/sleep 0.1; exit 0; fi
 exit 1
 `);
