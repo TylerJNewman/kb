@@ -1,106 +1,174 @@
-import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-type Owner = {
-  pid: number;
-  createdAt: number;
-  token: string;
+export type FileLockOptions = {
+  lockPath: string;
+  label: string;
+  createError: (message: string) => Error;
+  timeoutMs?: number;
+  staleMs?: number;
+  beforeOwnerWrite?: () => void;
+  beforeRecoveryOwnerWrite?: () => void;
 };
 
-export async function withFileLock<T>(
+class LegacyFileLockError extends Error {}
+
+export function withFileLock<T>(options: FileLockOptions, action: () => Promise<T>): Promise<T>;
+export function withFileLock<T>(
   lockPath: string,
   label: string,
   action: () => Promise<T>,
-  timeoutMs = 10_000,
+  timeoutMs?: number,
+): Promise<T>;
+export async function withFileLock<T>(
+  optionsOrPath: FileLockOptions | string,
+  actionOrLabel: (() => Promise<T>) | string,
+  legacyAction?: () => Promise<T>,
+  legacyTimeoutMs?: number,
 ): Promise<T> {
-  await mkdir(dirname(lockPath), { recursive: true });
-  const owner: Owner = { pid: process.pid, createdAt: Date.now(), token: randomUUID() };
+  const options: FileLockOptions = typeof optionsOrPath === "string"
+    ? {
+        lockPath: optionsOrPath,
+        label: actionOrLabel as string,
+        timeoutMs: legacyTimeoutMs,
+        createError: (message) => new LegacyFileLockError(message),
+      }
+    : optionsOrPath;
+  const action = (typeof actionOrLabel === "function" ? actionOrLabel : legacyAction)!;
+  const timeoutMs = options.timeoutMs ?? 2_000;
+  const staleMs = options.staleMs ?? 10_000;
   const deadline = Date.now() + timeoutMs;
+  const recoveryPath = `${options.lockPath}.recovery`;
+  await mkdir(dirname(options.lockPath), { recursive: true });
 
-  while (!(await tryClaim(lockPath, owner))) {
-    await recoverStaleClaim(lockPath);
-    if (Date.now() >= deadline) {
-      throw new Error(`${label} lock acquisition timed out`);
+  while (true) {
+    if (await pathExists(recoveryPath)) {
+      await recoverStaleRecoveryMarker(recoveryPath, staleMs);
+      if (await pathExists(recoveryPath)) {
+        await waitForRetry(options, deadline);
+        continue;
+      }
     }
-    await Bun.sleep(25);
+    try {
+      await mkdir(options.lockPath);
+      try {
+        options.beforeOwnerWrite?.();
+        await writeFile(join(options.lockPath, "owner"), JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+      } catch (error) {
+        await rm(options.lockPath, { recursive: true, force: true });
+        throw options.createError(`${options.label} lock owner write failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      break;
+    } catch (error) {
+      if (isLockError(error, options.createError)) {
+        throw error;
+      }
+      if (!isNodeError(error) || error.code !== "EEXIST") {
+        throw options.createError(`${options.label} lock acquisition failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      await recoverStaleLock(options, recoveryPath, staleMs);
+      await waitForRetry(options, deadline);
+    }
   }
 
   try {
     return await action();
   } finally {
-    await releaseIfOwned(lockPath, owner);
+    await rm(options.lockPath, { recursive: true, force: true });
   }
 }
 
-async function tryClaim(lockPath: string, owner: Owner): Promise<boolean> {
+async function recoverStaleLock(options: FileLockOptions, recoveryPath: string, staleMs: number): Promise<void> {
   try {
-    await mkdir(lockPath);
+    await mkdir(recoveryPath);
   } catch (error) {
     if (isNodeError(error) && error.code === "EEXIST") {
+      return;
+    }
+    throw error;
+  }
+
+  try {
+    try {
+      options.beforeRecoveryOwnerWrite?.();
+      await writeFile(join(recoveryPath, "owner"), JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+    } catch (error) {
+      await rm(recoveryPath, { recursive: true, force: true });
+      throw options.createError(
+        `${options.label} recovery lock owner write failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    await recoverStaleLockWhileSerialized(options.lockPath, staleMs);
+  } finally {
+    await rm(recoveryPath, { recursive: true, force: true });
+  }
+}
+
+async function recoverStaleRecoveryMarker(recoveryPath: string, staleMs: number): Promise<void> {
+  let owner: { pid?: unknown; createdAt?: unknown };
+  try {
+    owner = JSON.parse(await readFile(join(recoveryPath, "owner"), "utf8")) as { pid?: unknown; createdAt?: unknown };
+  } catch {
+    await removeIfStale(recoveryPath, staleMs);
+    return;
+  }
+
+  if (typeof owner.pid !== "number" || typeof owner.createdAt !== "number") {
+    await removeIfStale(recoveryPath, staleMs);
+    return;
+  }
+  if (Date.now() - owner.createdAt < staleMs || isPidAlive(owner.pid)) {
+    return;
+  }
+  await rm(recoveryPath, { recursive: true, force: true });
+}
+
+async function recoverStaleLockWhileSerialized(lockPath: string, staleMs: number): Promise<void> {
+  let owner: { pid?: unknown; createdAt?: unknown };
+  try {
+    owner = JSON.parse(await readFile(join(lockPath, "owner"), "utf8")) as { pid?: unknown; createdAt?: unknown };
+  } catch {
+    await removeIfStale(lockPath, staleMs);
+    return;
+  }
+
+  if (typeof owner.pid !== "number" || typeof owner.createdAt !== "number") {
+    await removeIfStale(lockPath, staleMs);
+    return;
+  }
+  if (isPidAlive(owner.pid)) {
+    return;
+  }
+  await rm(lockPath, { recursive: true, force: true });
+}
+
+async function waitForRetry(options: FileLockOptions, deadline: number): Promise<void> {
+  if (Date.now() >= deadline) {
+    throw options.createError(`${options.label} lock acquisition timed out`);
+  }
+  await Bun.sleep(25);
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
       return false;
     }
     throw error;
   }
-
-  try {
-    await writeFile(join(lockPath, "owner"), `${JSON.stringify(owner)}\n`, { flag: "wx" });
-    return true;
-  } catch (error) {
-    await rm(lockPath, { recursive: true, force: true });
-    throw error;
-  }
 }
 
-async function recoverStaleClaim(lockPath: string): Promise<void> {
-  let owner: Owner | null = null;
+async function removeIfStale(lockPath: string, staleMs: number): Promise<void> {
   try {
-    const value = JSON.parse(await readFile(join(lockPath, "owner"), "utf8")) as Partial<Owner>;
-    if (typeof value.pid === "number" && typeof value.createdAt === "number" && typeof value.token === "string") {
-      owner = value as Owner;
-    }
-  } catch {
-    // An interrupted claimant may leave an ownerless directory briefly.
-  }
-
-  if (owner !== null) {
-    if (isPidAlive(owner.pid)) {
-      return;
-    }
-    const current = await readOwner(lockPath);
-    if (current?.token === owner.token) {
+    const lock = await stat(lockPath);
+    if (Date.now() - lock.mtimeMs >= staleMs) {
       await rm(lockPath, { recursive: true, force: true });
     }
+  } catch {
     return;
-  }
-
-  try {
-    const metadata = await stat(lockPath);
-    if (Date.now() - metadata.mtimeMs >= 250 && (await readOwner(lockPath)) === null) {
-      await rm(lockPath, { recursive: true, force: true });
-    }
-  } catch (error) {
-    if (!isNodeError(error) || error.code !== "ENOENT") {
-      throw error;
-    }
-  }
-}
-
-async function releaseIfOwned(lockPath: string, owner: Owner): Promise<void> {
-  const current = await readOwner(lockPath);
-  if (current?.token === owner.token && current.pid === owner.pid) {
-    await rm(lockPath, { recursive: true, force: true });
-  }
-}
-
-async function readOwner(lockPath: string): Promise<Owner | null> {
-  try {
-    const value = JSON.parse(await readFile(join(lockPath, "owner"), "utf8")) as Partial<Owner>;
-    return typeof value.pid === "number" && typeof value.createdAt === "number" && typeof value.token === "string"
-      ? value as Owner
-      : null;
-  } catch {
-    return null;
   }
 }
 
@@ -111,6 +179,10 @@ function isPidAlive(pid: number): boolean {
   } catch (error) {
     return isNodeError(error) && error.code === "EPERM";
   }
+}
+
+function isLockError(error: unknown, createError: (message: string) => Error): boolean {
+  return error instanceof (createError("").constructor as new (...args: unknown[]) => Error);
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

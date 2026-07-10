@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { withFileLock } from "./file-lock";
 import { FORMAT_VERSION } from "./memory-format";
 
 export type KbConfig = {
@@ -183,61 +184,19 @@ async function withConfigLock<T>(kbPath: string, action: () => Promise<T>): Prom
     throw new KbConfigCommitError("config lock acquisition failed");
   }
 
-  const lockPath = join(kbPath, ".kb.yaml.lock");
-  const deadline = Date.now() + 2_000;
-  while (true) {
-    try {
-      await mkdir(lockPath);
-      try {
+  return withFileLock(
+    {
+      lockPath: join(kbPath, ".kb.yaml.lock"),
+      label: "config",
+      createError: (message) => new KbConfigCommitError(message),
+      beforeOwnerWrite: () => {
         if (process.env.KB_FAIL_CONFIG_LOCK === "after-mkdir") {
           throw new Error("injected owner write failure");
         }
-        await writeFile(join(lockPath, "owner"), JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
-      } catch (error) {
-        await rm(lockPath, { recursive: true, force: true });
-        throw new KbConfigCommitError(`config lock owner write failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      break;
-    } catch (error) {
-      if (error instanceof KbConfigCommitError) {
-        throw error;
-      }
-      if (!isNodeError(error) || error.code !== "EEXIST") {
-        throw new KbConfigCommitError(`config lock acquisition failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      await recoverStaleLock(lockPath);
-      if (Date.now() >= deadline) {
-        throw new KbConfigCommitError("config lock acquisition timed out");
-      }
-      await Bun.sleep(25);
-    }
-  }
-
-  try {
-    return await action();
-  } finally {
-    await rm(lockPath, { recursive: true, force: true });
-  }
-}
-
-async function recoverStaleLock(lockPath: string): Promise<void> {
-  let owner: { pid?: unknown; createdAt?: unknown } = {};
-  try {
-    owner = JSON.parse(await readFile(join(lockPath, "owner"), "utf8")) as { pid?: unknown; createdAt?: unknown };
-  } catch {
-    return;
-  }
-
-  if (typeof owner.pid !== "number" || typeof owner.createdAt !== "number") {
-    return;
-  }
-  if (Date.now() - owner.createdAt < 10_000) {
-    return;
-  }
-  if (isPidAlive(owner.pid)) {
-    return;
-  }
-  await rm(lockPath, { recursive: true, force: true });
+      },
+    },
+    action,
+  );
 }
 
 async function writeConfigAtomically(kbPath: string, content: string): Promise<void> {
@@ -272,15 +231,6 @@ function isArm(value: string): value is KbConfig["arm"] {
 
 function isEngineState(value: string): value is KbConfig["engineState"] {
   return value === "disabled" || value === "enabled";
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isNodeError(error) && error.code === "EPERM";
-  }
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
