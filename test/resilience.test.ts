@@ -100,13 +100,20 @@ test("an abandoned Add is durable, visible, resumable, and explicitly completabl
 
   const added = await harness.runKb(["add", source, "--in", "research"]);
   const rawRef = /^Raw source: (raw\/.+)$/m.exec(added.stdout)?.[1];
+  const handoffId = /^Handoff ID: (add-[a-f0-9]{24})$/m.exec(added.stdout)?.[1];
   expect(rawRef).toBeDefined();
+  expect(handoffId).toBeDefined();
 
   const status = await harness.runKb(["status", "--in", "research"]);
   expect(status.stdout).toContain("Health: unfinished work");
-  expect(status.stdout).toContain(`Resume: kb add --resume ${rawRef} --in research`);
+  expect(status.stdout).toContain(`Resume: kb add --resume ${handoffId} --in research`);
+  expect(status.stdout).not.toContain(`Resume: kb add --resume ${rawRef} --in research`);
 
-  const resumed = await harness.runKb(["add", "--resume", rawRef!, "--in", "research"]);
+  const rawResume = await harness.runKb(["add", "--resume", rawRef!, "--in", "research"]);
+  expect(rawResume.code).toBe(64);
+  expect(rawResume.stderr).toContain(`no Add handoff for ${rawRef}`);
+
+  const resumed = await harness.runKb(["add", "--resume", handoffId!, "--in", "research"]);
   expect(resumed.code).toBe(0);
   expect(resumed.stdout).toContain("Resuming pending Add");
   expect(resumed.stdout).toContain("Memory target: memories/one.md");

@@ -1378,7 +1378,7 @@ async function addSource(
 
     return await withFileLock(join(target.path, ".kb-state.lock"), `KB ${target.name} state`, async () => {
       if (resumeRef !== null) {
-        const loaded = await loadAddHandoff(target.path, resumeRef);
+        const loaded = await loadAddHandoff(target.path, resumeRef, false);
         if (loaded === null) {
           throw new AddCommandError("HANDOFF_NOT_FOUND", `no Add handoff for ${resumeRef}`, EXIT_USAGE);
         }
@@ -2062,12 +2062,16 @@ async function readIngressLogEvent(kbPath: string, handoffId: string): Promise<A
   }
 }
 
-async function loadAddHandoff(kbPath: string, ref: string): Promise<LoadedAddHandoff | null> {
+async function loadAddHandoff(
+  kbPath: string,
+  ref: string,
+  allowV2RawRef = false,
+): Promise<LoadedAddHandoff | null> {
   if (/^add-[a-f0-9]{24}$/.test(ref)) {
     return loadAddById(kbPath, ref);
   }
   if (!isKbRef(kbPath, ref, "raw")) return null;
-  const candidates = await findAddsByRawRef(kbPath, ref);
+  const candidates = await findAddsByRawRef(kbPath, ref, allowV2RawRef);
   if (candidates.length > 1) {
     throw new AddCommandError("AMBIGUOUS_HANDOFF", `raw ref identifies more than one Add handoff: ${ref}`, EXIT_DATAERR);
   }
@@ -2085,7 +2089,7 @@ async function loadAddById(kbPath: string, handoffId: string): Promise<LoadedAdd
   const completed = completedValue === null ? null : parseCompletedAddV2(completedValue, stateRef(kbPath, completedPath));
   if (pending === null && completed === null) return null;
   if (completed !== null) {
-    if (pending !== null && (pending.identitySha256 !== completed.identitySha256 || pending.rawSha256 !== completed.rawSha256)) {
+    if (pending !== null && !pendingReceiptsMatch(pending, { ...completed, state: "pending" })) {
       throw malformedState(stateRef(kbPath, completedPath));
     }
     if (pending !== null) await rm(pendingPath, { force: true });
@@ -2094,7 +2098,11 @@ async function loadAddById(kbPath: string, handoffId: string): Promise<LoadedAdd
   return { record: pending!, completed: null, pendingPath };
 }
 
-async function findAddsByRawRef(kbPath: string, rawRef: string): Promise<LoadedAddHandoff[]> {
+async function findAddsByRawRef(
+  kbPath: string,
+  rawRef: string,
+  allowV2: boolean,
+): Promise<LoadedAddHandoff[]> {
   const results: LoadedAddHandoff[] = [];
   for (const state of ["pending", "completed"] as const) {
     const dir = join(kbPath, ".kb", state, "add");
@@ -2113,7 +2121,7 @@ async function findAddsByRawRef(kbPath: string, rawRef: string): Promise<LoadedA
       if (value === null) continue;
       if (state === "completed") {
         const completed = parseCompletedAddV2(value, ref);
-        if (completed.rawRef === rawRef) {
+        if (allowV2 && completed.rawRef === rawRef) {
           results.push({ record: { ...completed, state: "pending" }, completed, pendingPath: null });
         }
         continue;
@@ -2125,7 +2133,7 @@ async function findAddsByRawRef(kbPath: string, rawRef: string): Promise<LoadedA
         continue;
       }
       const pending = parsePendingAddV2(value, ref);
-      if (pending.rawRef === rawRef) results.push({ record: pending, completed: null, pendingPath: path });
+      if (allowV2 && pending.rawRef === rawRef) results.push({ record: pending, completed: null, pendingPath: path });
     }
   }
   const byId = new Map<string, LoadedAddHandoff>();
@@ -2163,9 +2171,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isLegacyPendingAdd(value: unknown): value is LegacyPendingAdd {
   return isRecord(value) && value.schemaVersion === 1 && value.kind === "add"
-    && typeof value.rawRef === "string" && typeof value.suggestedMemoryRef === "string"
-    && typeof value.title === "string" && typeof value.urlReference === "boolean"
-    && typeof value.arm === "string" && typeof value.createdAt === "string";
+    && typeof value.rawRef === "string" && isCanonicalScopedRef(value.rawRef, "raw")
+    && typeof value.suggestedMemoryRef === "string" && isCanonicalScopedRef(value.suggestedMemoryRef, "memories")
+    && typeof value.title === "string" && value.title.length > 0 && isSingleLine(value.title)
+    && typeof value.urlReference === "boolean"
+    && typeof value.arm === "string" && ["wiki", "b0", "b1"].includes(value.arm)
+    && typeof value.createdAt === "string" && isCanonicalInstant(value.createdAt);
 }
 
 function parsePendingAddV2(value: unknown, path: string): PendingAddV2 {
@@ -2179,7 +2190,26 @@ function parsePendingAddV2(value: unknown, path: string): PendingAddV2 {
     || typeof value.title !== "string" || typeof value.urlReference !== "boolean" || typeof value.arm !== "string") {
     throw malformedState(path);
   }
-  return value as PendingAddV2;
+  const pending = value as PendingAddV2;
+  const sourcePaired = (pending.source.name === null) === (pending.source.id === null);
+  const sourceValid = pending.source.name === null
+    || (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(pending.source.name)
+      && pending.source.id !== null && pending.source.id.length > 0
+      && isSingleLine(pending.source.id) && isUtf8RoundTrip(pending.source.id));
+  const capturedAtValid = pending.source.capturedAt === null || isCanonicalInstant(pending.source.capturedAt);
+  const identityValid = addIdentitySha256(pending.rawSha256, pending.source) === pending.identitySha256
+    && pending.handoffId === `add-${pending.identitySha256.slice(0, 24)}`;
+  const pathId = basename(path, ".json");
+  if (!sourcePaired || !sourceValid || !capturedAtValid || !identityValid
+    || pathId !== pending.handoffId
+    || !isCanonicalScopedRef(pending.rawRef, "raw")
+    || !isCanonicalScopedRef(pending.suggestedMemoryRef, "memories")
+    || !isCanonicalInstant(pending.createdAt)
+    || pending.title.length === 0 || !isSingleLine(pending.title) || !isUtf8RoundTrip(pending.title)
+    || !["wiki", "b0", "b1"].includes(pending.arm)) {
+    throw malformedState(path);
+  }
+  return pending;
 }
 
 function parseCompletedAddV2(value: unknown, path: string): CompletedAddV2 {
@@ -2188,11 +2218,46 @@ function parseCompletedAddV2(value: unknown, path: string): CompletedAddV2 {
     throw malformedState(path);
   }
   const pending = parsePendingAddV2({ ...value, state: "pending" }, path);
-  if (value.outcome === "derived" && (!Array.isArray(value.memories) || !value.memories.every((ref) => typeof ref === "string"))) {
+  if (!isCanonicalInstant(value.completedAt)) throw malformedState(path);
+  if (value.outcome === "derived") {
+    if (!Array.isArray(value.memories) || value.memories.length === 0
+      || !value.memories.every((ref) => typeof ref === "string" && isCanonicalScopedRef(ref, "memories"))
+      || JSON.stringify(value.memories) !== JSON.stringify([...new Set(value.memories)].sort())
+      || value.reason !== undefined) {
+      throw malformedState(path);
+    }
+  }
+  if (value.outcome === "raw-only"
+    && (typeof value.reason !== "string" || value.reason.length === 0 || value.reason.length > 500
+      || !isSingleLine(value.reason) || !isUtf8RoundTrip(value.reason) || value.memories !== undefined)) {
     throw malformedState(path);
   }
-  if (value.outcome === "raw-only" && typeof value.reason !== "string") throw malformedState(path);
   return value as CompletedAddV2;
+}
+
+function isCanonicalScopedRef(ref: string, scope: "raw" | "memories"): boolean {
+  if (!isSingleLine(ref) || !isUtf8RoundTrip(ref) || !ref.startsWith(`${scope}/`)
+    || ref.includes("\\") || ref.includes("//")) return false;
+  const segments = ref.split("/");
+  return segments.length >= 2 && segments.slice(1).every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+function isCanonicalInstant(value: string): boolean {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function pendingReceiptsMatch(left: PendingAddV2, right: PendingAddV2): boolean {
+  return left.handoffId === right.handoffId
+    && left.identitySha256 === right.identitySha256
+    && left.rawRef === right.rawRef
+    && left.rawSha256 === right.rawSha256
+    && left.suggestedMemoryRef === right.suggestedMemoryRef
+    && JSON.stringify(left.source) === JSON.stringify(right.source)
+    && left.createdAt === right.createdAt
+    && left.title === right.title
+    && left.urlReference === right.urlReference
+    && left.arm === right.arm;
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -2259,7 +2324,7 @@ async function completeAddHandoff(
   const intent = options.noMemory
     ? { outcome: "raw-only" as const, reason: options.reason! }
     : { outcome: "derived" as const, memories: normalizeMemoryRefs(target.path, memoryInputs) };
-  const loaded = await loadAddHandoff(target.path, lookupRef);
+  const loaded = await loadAddHandoff(target.path, lookupRef, legacyPositional);
   if (loaded === null) {
     throw new AddCommandError("HANDOFF_NOT_FOUND", `no Add handoff for ${lookupRef}`, EXIT_USAGE);
   }
@@ -3355,9 +3420,6 @@ function renderUnfinishedWork(targetName: string, inspection: HandoffInspection)
     lines.push(`  Raw source: ${record.rawRef}`);
     lines.push(`  State: ${stateText}`);
     lines.push(`  Resume: kb add --resume ${handoffRef} --in ${targetName}`);
-    if (record.schemaVersion === 2) {
-      lines.push(`  Resume: kb add --resume ${record.rawRef} --in ${targetName} (legacy raw-ref compatibility)`);
-    }
   }
   for (const ref of inspection.drafts) {
     lines.push(`- Draft: ${ref}`);

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { INDEX_LINE_FORMAT, indexLine } from "../src/memory-format";
+import { INDEX_LINE_FORMAT, indexLine, memoryTemplate } from "../src/memory-format";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
 const packageVersion = (await Bun.file(resolve(import.meta.dir, "../package.json")).json() as { version: string }).version;
@@ -22,6 +22,7 @@ test("kb --help exits 0 and writes the golden help surface to stdout", async () 
 
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
+  expect(result.stdout).not.toMatch(/\x1b\[/);
   expect(result.stdout).toContain("Create and grow local-first markdown knowledge bases.");
   expect(result.stdout).toContain("Usage:");
   expect(result.stdout).toContain("kb <command> [args] [--in <name>]");
@@ -543,6 +544,7 @@ test("kb add <file> stages raw source unchanged, logs ingest, and prints the ing
 
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
+  expect(result.stdout).not.toMatch(/\x1b\[/);
   expect(rawFiles).toHaveLength(1);
   expect(rawFiles[0]).toMatch(/^source-[a-f0-9]{12}\.md$/);
   expect(await readFile(join(kbDir, "raw", rawFiles[0]), "utf8")).toBe(sourceText);
@@ -768,6 +770,19 @@ test("kb add derivative completion verifies lineage and cataloging, then replays
   const kbDir = join(harness.home, "kb", "research");
   const memoryA = "memories/alpha.md";
   const memoryB = "memories/beta.md";
+  const traversal = await harness.runKb([
+    "add", "--complete", handoffId, "--memory", "../outside.md", "--json", "--in", "research",
+  ]);
+  expect(traversal.code).toBe(64);
+  expect(JSON.parse(traversal.stderr)).toMatchObject({ error: { code: "INVALID_MEMORY_REF" } });
+
+  await writeFile(join(kbDir, memoryA), memoryTemplate("Alpha", "alpha"));
+  const untouchedTodo = await harness.runKb([
+    "add", "--complete", handoffId, "--memory", memoryA, "--json", "--in", "research",
+  ]);
+  expect(untouchedTodo.code).toBe(65);
+  expect(JSON.parse(untouchedTodo.stderr)).toMatchObject({ error: { code: "INVALID_COMPLETION" } });
+
   await writeFile(join(kbDir, memoryA), "---\ntitle: Alpha\ntype: note\ntags:\n  - research\npermalink: alpha\n---\n\n## Summary\n\nAlpha\n");
 
   const missingLineage = await harness.runKb([
@@ -892,6 +907,55 @@ test("kb add fails closed with the exact malformed state path", async () => {
     ok: false,
     command: "add",
     error: { code: "MALFORMED_STATE", message: `malformed Add state: ${stateRef}` },
+  });
+});
+
+test("kb add fails closed on semantically corrupted pending and completed receipts", async () => {
+  await scaffoldResearchKb();
+  const source = join(harness.cwd, "semantic-state.md");
+  await writeFile(source, "semantic state source\n");
+  const staged = JSON.parse((await harness.runKb([
+    "add", source, "--source", "screenpipe", "--source-id", "semantic-1", "--json", "--in", "research",
+  ])).stdout);
+  const kbDir = join(harness.home, "kb", "research");
+  const handoffId = staged.result.handoffId as string;
+  const pendingRef = `.kb/pending/add/${handoffId}.json`;
+  const pendingPath = join(kbDir, pendingRef);
+  const original = JSON.parse(await readFile(pendingPath, "utf8"));
+  const corruptions = [
+    { ...original, identitySha256: "0".repeat(64) },
+    { ...original, rawRef: "raw/../escape.md" },
+    { ...original, source: { name: "screenpipe", id: null, capturedAt: null } },
+    { ...original, createdAt: "2026-02-31T13:00:00.000Z" },
+  ];
+
+  for (const corrupted of corruptions) {
+    await writeFile(pendingPath, `${JSON.stringify(corrupted, null, 2)}\n`);
+    const result = await harness.runKb(["add", "--resume", handoffId, "--json", "--in", "research"]);
+    expect(result.code).toBe(65);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toEqual({
+      schemaVersion: 1,
+      ok: false,
+      command: "add",
+      error: { code: "MALFORMED_STATE", message: `malformed Add state: ${pendingRef}` },
+    });
+  }
+
+  await writeFile(pendingPath, `${JSON.stringify(original, null, 2)}\n`);
+  const completed = await harness.runKb([
+    "add", "--complete", handoffId, "--no-memory", "--reason", "No durable knowledge", "--json", "--in", "research",
+  ]);
+  expect(completed.code).toBe(0);
+  const completedRef = `.kb/completed/add/${handoffId}.json`;
+  const completedPath = join(kbDir, completedRef);
+  const completedState = JSON.parse(await readFile(completedPath, "utf8"));
+  await writeFile(completedPath, `${JSON.stringify({ ...completedState, memories: ["memories/conflict.md"] }, null, 2)}\n`);
+  const replay = await harness.runKb(["add", "--resume", handoffId, "--json", "--in", "research"]);
+  expect(replay.code).toBe(65);
+  expect(replay.stdout).toBe("");
+  expect(JSON.parse(replay.stderr)).toMatchObject({
+    error: { code: "MALFORMED_STATE", message: `malformed Add state: ${completedRef}` },
   });
 });
 

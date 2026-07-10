@@ -17,7 +17,7 @@ A minimal, self-documenting CLI (`kb`) that an AI agent drives to scaffold and g
 
 ## Basic Memory command contract (from the Slice 0b spike — USE THESE, not guesses)
 The spike (`docs/spikes/basic-memory-contract.md`, fixtures in `test/fixtures/basic-memory-contract/`) captured real Basic Memory 0.22.1 behavior. Engine slices MUST match:
-- Install/run: `uvx basic-memory ...` (or `bm` if installed on PATH).
+- Install/run: exact ambient `bm` 0.22.1 when available; otherwise `uvx --from basic-memory==0.22.1 bm ...`.
 - Add project: `bm project add <name> <path>`.
 - Index (there is NO `bm sync`): `bm reindex --project <name> --search`.
 - Search: `bm tool search-notes "<query>" --project <name>` — **prints JSON by default; does NOT accept `--json`/`--format json`** (passing them errors). Optional `--entity-type observation|relation`.
