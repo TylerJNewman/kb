@@ -860,6 +860,7 @@ async function createKb(args: string[], arm: string | null): Promise<number> {
           error.code = "EEXIST";
           throw error;
         }
+        await ensureScaffoldFile(join(kbDir, "CLAUDE.md"), "@AGENTS.md\n");
         const registration = await registerKb(name, kbDir);
         return { kind: "recovered" as const, becameDefault: registration.becameDefault };
       }
@@ -926,6 +927,7 @@ async function initKb(args: string[], arm: string | null): Promise<number> {
     const kind = await withFileLock(scaffoldLockPath(cwd), `KB ${name} scaffold`, async () => {
       if (await isCompleteKbRoot(cwd) && !(await exists(join(cwd, ".kb-scaffold-transaction.json")))) {
         await readKbConfig(cwd);
+        await ensureScaffoldFile(join(cwd, "CLAUDE.md"), "@AGENTS.md\n");
         await registerKb(name, cwd);
         return "adopted" as const;
       }
@@ -991,6 +993,7 @@ function scaffoldFiles(name: string, arm: ScaffoldArm): Array<{ path: string; co
   return [
     { path: "kb.yaml", content: kbYaml(arm) },
     { path: "AGENTS.md", content: agentsMd() },
+    { path: "CLAUDE.md", content: "@AGENTS.md\n" },
     { path: "index.md", content: indexMd() },
     { path: "log.md", content: logMd(name) },
   ];

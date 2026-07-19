@@ -124,3 +124,19 @@ test("beginner guidance calls research an example KB name", async () => {
     expect((await text(path)).toLowerCase(), path).toContain("research is just an example name");
   }
 });
+
+test("beginner guidance keeps editors and agents optional", async () => {
+  for (const path of beginnerSurfaces) {
+    expect((await text(path)), path).toContain("Obsidian is optional; Claude is one possible agent, not a dependency.");
+  }
+});
+
+test("raw safety guidance describes integrity conventions without claiming an OS sandbox", async () => {
+  const relevantSurfaces = ["docs/START-HERE.md", "site/index.html", "site/walkthrough.html"];
+  for (const path of relevantSurfaces) {
+    const content = await text(path);
+    expect(content, path).toContain("integrity and tamper-detection convention");
+    expect(content, path).toContain("not an OS sandbox");
+    expect(content, path).not.toContain("can never corrupt your evidence");
+  }
+});

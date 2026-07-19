@@ -207,9 +207,10 @@ test("the real npm tarball passes the clean-home core workflow", async () => {
     expectSuccess(created);
     const kbDir = join(home, "kb", "packed-smoke");
     expect(created.stdout).toContain(`Path: ${kbDir}`);
-    for (const file of ["kb.yaml", "AGENTS.md", "index.md", "log.md"]) {
+    for (const file of ["kb.yaml", "AGENTS.md", "CLAUDE.md", "index.md", "log.md"]) {
       expect((await stat(join(kbDir, file))).isFile()).toBe(true);
     }
+    expect(await readFile(join(kbDir, "CLAUDE.md"), "utf8")).toBe("@AGENTS.md\n");
     for (const directory of ["raw", "memories"]) {
       expect((await stat(join(kbDir, directory))).isDirectory()).toBe(true);
     }

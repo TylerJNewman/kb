@@ -16,6 +16,19 @@ let binDir = "";
 let kbDir = "";
 let originalPath: string | undefined;
 let originalTimeout: string | undefined;
+let originalSecretSentinel: string | undefined;
+const controlledEngineEnvKeys = [
+  "HOME",
+  "BASIC_MEMORY_CONFIG_DIR",
+  "FASTEMBED_CACHE_PATH",
+  "UV_SYSTEM_CERTS",
+  "UV_NATIVE_TLS",
+  "UV_OFFLINE",
+  "UV_NO_CONFIG",
+  "UV_NO_SYSTEM_CONFIG",
+  "UV_PYTHON_DOWNLOADS",
+] as const;
+let originalControlledEngineEnv = new Map<string, string | undefined>();
 
 test("Basic Memory fallback command construction stays pinned", () => {
   expect(buildBasicMemoryCommand(["tool", "search-notes", "durable observation", "--project", "research"])).toEqual([
@@ -38,8 +51,11 @@ beforeEach(async () => {
   await Promise.all([mkdir(binDir), mkdir(kbDir)]);
   originalPath = process.env.PATH;
   originalTimeout = process.env.KB_ENGINE_TIMEOUT_MS;
+  originalSecretSentinel = process.env.KB_ENGINE_SECRET_SENTINEL;
+  originalControlledEngineEnv = new Map(controlledEngineEnvKeys.map((key) => [key, process.env[key]]));
   process.env.PATH = binDir;
   delete process.env.KB_ENGINE_TIMEOUT_MS;
+  delete process.env.KB_ENGINE_SECRET_SENTINEL;
 });
 
 afterEach(async () => {
@@ -53,7 +69,67 @@ afterEach(async () => {
   } else {
     process.env.KB_ENGINE_TIMEOUT_MS = originalTimeout;
   }
+  if (originalSecretSentinel === undefined) {
+    delete process.env.KB_ENGINE_SECRET_SENTINEL;
+  } else {
+    process.env.KB_ENGINE_SECRET_SENTINEL = originalSecretSentinel;
+  }
+  for (const [key, value] of originalControlledEngineEnv) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
   await rm(root, { recursive: true, force: true });
+});
+
+test.serial("bm and uvx preserve reviewed operational and denial settings without ambient secrets", async () => {
+  const expectedValues = {
+    HOME: join(root, "engine-home"),
+    BASIC_MEMORY_CONFIG_DIR: join(root, "basic-memory-config"),
+    FASTEMBED_CACHE_PATH: join(root, "fastembed-cache"),
+    UV_SYSTEM_CERTS: "true",
+    UV_NATIVE_TLS: "true",
+    UV_OFFLINE: "true",
+    UV_NO_CONFIG: "true",
+    UV_NO_SYSTEM_CONFIG: "true",
+    UV_PYTHON_DOWNLOADS: "never",
+  } as const;
+  for (const [key, value] of Object.entries(expectedValues)) process.env[key] = value;
+  process.env.KB_ENGINE_SECRET_SENTINEL = "must-not-reach-engine";
+  const assertEnvironment = `
+if [ -n "$KB_ENGINE_SECRET_SENTINEL" ]; then echo 'ambient secret reached Engine subprocess' >&2; exit 93; fi
+if [ "$HOME" != '${expectedValues.HOME}' ]; then exit 81; fi
+if [ "$BASIC_MEMORY_CONFIG_DIR" != '${expectedValues.BASIC_MEMORY_CONFIG_DIR}' ]; then exit 82; fi
+if [ "$FASTEMBED_CACHE_PATH" != '${expectedValues.FASTEMBED_CACHE_PATH}' ]; then exit 83; fi
+if [ "$UV_SYSTEM_CERTS" != 'true' ] || [ "$UV_NATIVE_TLS" != 'true' ]; then exit 84; fi
+if [ "$UV_OFFLINE" != 'true' ] || [ "$UV_NO_CONFIG" != 'true' ]; then exit 85; fi
+if [ "$UV_NO_SYSTEM_CONFIG" != 'true' ] || [ "$UV_PYTHON_DOWNLOADS" != 'never' ]; then exit 86; fi
+`;
+  await fakeExecutable("bm", `#!/bin/sh
+${assertEnvironment}
+printf 'bm' > '${join(root, "bm-environment-ok")}'
+if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then printf '{"projects":[]}\\n'; exit 0; fi
+exit 92
+`);
+
+  expect(await new BasicMemoryAdapter().listProjects(kbDir)).toEqual({ ok: true, value: [] });
+  expect(await readFile(join(root, "bm-environment-ok"), "utf8")).toBe("bm");
+
+  await rm(join(binDir, "bm"));
+  await fakeExecutable("uvx", `#!/bin/sh
+${assertEnvironment}
+printf 'uvx' > '${join(root, "uvx-environment-ok")}'
+if [ "$1" = "--version" ]; then echo 'uvx 0.8.0'; exit 0; fi
+if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ] && [ "$4" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "--from" ] && [ "$4" = "project" ] && [ "$5" = "list" ]; then printf '{"projects":[]}\\n'; exit 0; fi
+exit 92
+`);
+
+  expect(await new BasicMemoryAdapter().listProjects(kbDir)).toEqual({ ok: true, value: [] });
+  expect(await readFile(join(root, "uvx-environment-ok"), "utf8")).toBe("uvx");
 });
 
 test.serial("uvx fallback stays pinned for availability, reindex, and read-only schema inference", async () => {

@@ -43,7 +43,9 @@ Plain-language, ASCII, copy-paste. The basics in five minutes.
 └── kb.yaml       settings (arm, engine)
 ```
 
-All plain text. Opens in Obsidian. Lives in git. Delete `kb` tomorrow — you still have everything.
+All plain text. Opens in Obsidian. Lives in git. Delete `kb` tomorrow — you still have everything. **Obsidian is optional; Claude is one possible agent, not a dependency.**
+
+The workflow already has the four roles some systems call Inputs, Process, Outputs, and Feedback: `raw/` is Inputs; the pending handoff, playbook, and agent review are Process; `memories/` plus `index.md` are Outputs; and `log.md` plus `status`, `reflect`, and `check` are Feedback. These are roles, not four more folders.
 
 For a beginner, do **not** open a random folder first. Run `kb new research` from anywhere; it creates `~/kb/research/` and records it in `~/.config/kb/config.yaml`. **Research is just an example name**: use any simple name you want, such as `books` or `client-notes`, and replace `research` in the later commands and paths. Use `kb init` only when you want to turn the current directory into a KB.
 

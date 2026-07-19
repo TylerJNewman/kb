@@ -205,7 +205,7 @@ type RecoveryResult =
   | { kind: "complete"; registration: RegistrationResult };
 
 async function recoverExistingTransaction(options: ScaffoldTransactionOptions, root: string): Promise<RecoveryResult> {
-  const receipt = await readAndValidateReceipt(options, root);
+  let receipt = await readAndValidateReceipt(options, root);
   if (receipt === null) return { kind: "continue", options };
   const recoveredOptions = { ...options, initializeGit: receipt.initializeGit };
   await assertRootIdentity(root, receipt.rootIdentity);
@@ -215,6 +215,7 @@ async function recoverExistingTransaction(options: ScaffoldTransactionOptions, r
     if (!cleaned) throw recoveryError(root, ["previous cleanup detected changed content"]);
     return { kind: "continue", options: recoveredOptions };
   }
+  receipt = await normalizeLegacyScaffoldReceipt(recoveredOptions, root, receipt);
   await assertCompleteScaffold(recoveredOptions, root, receipt);
   const registration = await registerOrRollback(recoveredOptions);
   receipt.phase = "registered";
@@ -318,6 +319,35 @@ function expectedArtifacts(options: ScaffoldTransactionOptions): OwnedArtifact[]
   ];
 }
 
+function legacyExpectedArtifacts(options: ScaffoldTransactionOptions): OwnedArtifact[] {
+  return expectedArtifacts({ ...options, files: options.files.filter((file) => file.path !== "CLAUDE.md") });
+}
+
+async function normalizeLegacyScaffoldReceipt(
+  options: ScaffoldTransactionOptions,
+  root: string,
+  receipt: Receipt,
+): Promise<Receipt> {
+  const legacy = legacyExpectedArtifacts(options);
+  if (!artifactsMatch(receipt.artifacts, legacy, true) || receipt.artifacts.length !== legacy.length) return receipt;
+  const fileIndex = options.files.findIndex((file) => file.path === "CLAUDE.md");
+  const file = options.files[fileIndex];
+  if (fileIndex < 0 || file === undefined) return receipt;
+  const absolute = join(root, file.path);
+  try {
+    await writeFile(absolute, file.content, { flag: "wx" });
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "EEXIST" || await readFile(absolute, "utf8").catch(() => null) !== file.content) {
+      throw recoveryError(root, [file.path]);
+    }
+  }
+  const expected = expectedArtifacts(options)[fileIndex]!;
+  receipt.artifacts.splice(fileIndex, 0, { ...expected, identity: await identity(absolute) });
+  await writeReceiptAtomically(root, receipt);
+  inject("after-legacy-normalization");
+  return receipt;
+}
+
 async function readAndValidateReceipt(options: ScaffoldTransactionOptions, root: string): Promise<Receipt | null> {
   const committedPath = join(root, RECEIPT_NAME);
   const temporaryPath = join(root, RECEIPT_TEMP_NAME);
@@ -333,7 +363,13 @@ async function readAndValidateReceipt(options: ScaffoldTransactionOptions, root:
     if (!isReceipt(value) || value.mode !== options.mode || value.name !== options.name || value.target !== options.target) {
       throw new ScaffoldTransactionError(`unrecognized scaffold recovery receipt at ${receiptPath}`);
     }
-    validateArtifacts(value.artifacts, expectedArtifacts({ ...options, initializeGit: value.initializeGit }), receiptPath);
+    await validateArtifacts(
+      value.artifacts,
+      expectedArtifacts({ ...options, initializeGit: value.initializeGit }),
+      root,
+      options.name,
+      receiptPath,
+    );
     if (receiptPath === temporaryPath) await rename(temporaryPath, committedPath);
     return value;
   } catch (error) {
@@ -343,14 +379,58 @@ async function readAndValidateReceipt(options: ScaffoldTransactionOptions, root:
   }
 }
 
-function validateArtifacts(actual: OwnedArtifact[], expected: OwnedArtifact[], receiptPath: string): void {
+async function validateArtifacts(
+  actual: OwnedArtifact[],
+  expected: OwnedArtifact[],
+  root: string,
+  name: string,
+  receiptPath: string,
+): Promise<void> {
+  const legacy = expected.filter((artifact) => artifact.path !== "CLAUDE.md");
+  if (artifactsMatch(actual, expected) || artifactsMatch(actual, legacy)) return;
+  if (artifactsMatch(actual, expected, true) || artifactsMatch(actual, legacy, true)) {
+    const log = actual.find((artifact) => artifact.path === "log.md");
+    if (log !== undefined) await validateLegacyLogArtifact(log, root, name, receiptPath);
+    return;
+  }
   if (actual.length > expected.length) throw new ScaffoldTransactionError(`invalid scaffold artifact list at ${receiptPath}`);
+  throw new ScaffoldTransactionError(`invalid scaffold artifact at ${receiptPath}`);
+}
+
+function artifactsMatch(actual: OwnedArtifact[], expected: OwnedArtifact[], ignoreLegacyLogHash = false): boolean {
+  if (actual.length > expected.length) return false;
   for (let index = 0; index < actual.length; index++) {
     const artifact = actual[index]!;
     const wanted = expected[index]!;
-    if (artifact.path !== wanted.path || artifact.kind !== wanted.kind || artifact.expectedHash !== wanted.expectedHash) {
-      throw new ScaffoldTransactionError(`invalid scaffold artifact at ${receiptPath}`);
+    const hashMatches = ignoreLegacyLogHash && artifact.path === "log.md"
+      ? typeof artifact.expectedHash === "string"
+      : artifact.expectedHash === wanted.expectedHash;
+    if (artifact.path !== wanted.path || artifact.kind !== wanted.kind || !hashMatches) {
+      return false;
     }
+  }
+  return true;
+}
+
+async function validateLegacyLogArtifact(
+  artifact: OwnedArtifact,
+  root: string,
+  name: string,
+  receiptPath: string,
+): Promise<void> {
+  const absolute = join(root, artifact.path);
+  if (!(await pathPresent(absolute))) {
+    if (artifact.identity !== undefined) throw new ScaffoldTransactionError(`invalid scaffold artifact at ${receiptPath}`);
+    // If another process creates log.md after validation, fail closed during
+    // rollback instead of treating those new bytes as transaction-owned.
+    artifact.expectedHash = "legacy-log-was-absent";
+    return;
+  }
+  const bytes = await readFile(absolute);
+  const text = bytes.toString("utf8");
+  const match = /^# KB Log\n\n## \[(\d{4}-\d{2}-\d{2})\] created \| ([^\r\n]+)\n$/.exec(text);
+  if (match?.[2] !== name || hash(bytes) !== artifact.expectedHash) {
+    throw new ScaffoldTransactionError(`invalid scaffold artifact at ${receiptPath}`);
   }
 }
 

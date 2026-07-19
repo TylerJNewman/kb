@@ -235,6 +235,7 @@ test("concurrent same-name new leaves one complete registered KB", async () => {
   expect((await readdir(join(harness.home, "kb", "same"))).sort()).toEqual([
     ".git",
     "AGENTS.md",
+    "CLAUDE.md",
     "index.md",
     "kb.yaml",
     "log.md",
@@ -250,6 +251,7 @@ test("kb init adopts a valid external KB after Registry loss", async () => {
   await mkdir(external);
   expect((await harness.run("kb", ["init"], { cwd: external })).code).toBe(0);
   const before = await readFile(join(external, "kb.yaml"), "utf8");
+  await rm(join(external, "CLAUDE.md"));
   await rm(join(harness.xdgConfigHome, "kb", "config.yaml"));
 
   const adopted = await harness.run("kb", ["init"], { cwd: external });
@@ -257,6 +259,7 @@ test("kb init adopts a valid external KB after Registry loss", async () => {
   expect(adopted.code).toBe(0);
   expect(adopted.stdout).toContain("Registered existing KB: external");
   expect(await readFile(join(external, "kb.yaml"), "utf8")).toBe(before);
+  expect(await readFile(join(external, "CLAUDE.md"), "utf8")).toBe("@AGENTS.md\n");
   expect((await harness.runKb(["status", "--in", "external"])).code).toBe(0);
 });
 
@@ -265,6 +268,7 @@ test("missing config in a containing KB blocks default fallback", async () => {
   const damaged = join(harness.home, "kb", "damaged");
   await mkdir(damaged);
   expect((await harness.run("kb", ["init"], { cwd: damaged })).code).toBe(0);
+  await rm(join(damaged, "CLAUDE.md"));
   await rm(join(damaged, "kb.yaml"));
   const deep = join(damaged, "memories", "deep");
   await mkdir(deep);

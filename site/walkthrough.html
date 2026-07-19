@@ -130,7 +130,7 @@
 
   <h2><span class="num">II.</span>What lands on disk</h2>
 
-  <p>One command gives you a folder of plain markdown you own.<span class="sn">All plain text. Opens in Obsidian. Lives in git. Delete kb tomorrow and you still have everything.</span></p>
+  <p>One command gives you a folder of plain markdown you own. <strong>Obsidian is optional; Claude is one possible agent, not a dependency.</strong><span class="sn">All plain text. Opens in Obsidian. Lives in git. Delete kb tomorrow and you still have everything.</span></p>
 
   <figure>
 <pre>~/kb/research/
@@ -141,9 +141,11 @@
 └── kb.yaml       settings (arm, engine)</pre>
   </figure>
 
+  <p>The workflow already has four familiar roles: <strong>Inputs</strong> are <code>raw/</code>; <strong>Process</strong> is the pending handoff, playbook, and agent review; <strong>Outputs</strong> are <code>memories/</code> plus <code>index.md</code>; and <strong>Feedback</strong> is <code>log.md</code> plus <code>status</code>, <code>reflect</code>, and <code>check</code>. These are roles, not four more folders.</p>
+
   <p>For a beginner, do <strong>not</strong> open a random folder first. Run <code>kb new research</code> from anywhere; it creates <code>~/kb/research/</code> and records it in <code>~/.config/kb/config.yaml</code>. <strong>Research is just an example name</strong>: use any simple name you want, such as <code>books</code> or <code>client-notes</code>, and replace <code>research</code> in the later commands and paths. Use <code>kb init</code> only when you want to turn the current directory into a KB.</p>
 
-  <p>Two folders, one rule: the agent <strong>never edits <code>raw/</code></strong>. If a summary is wrong you fix the memory, never the source — so a bad pass can never corrupt your evidence.</p>
+  <p>Two folders, one rule: the agent <strong>never edits <code>raw/</code></strong>. If a summary is wrong you fix the memory, never the source. This no-overwrite rule and Git history provide an integrity and tamper-detection convention; they are not an OS sandbox against a process running as you.</p>
 
   <h2><span class="num">III.</span>The hello-world pipeline</h2>
 

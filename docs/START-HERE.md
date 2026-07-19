@@ -41,7 +41,18 @@ Run one command, get a folder of plain markdown:
   kb.yaml     ← settings
 ```
 
-All plain text. Opens in Obsidian. Lives in git. No database, no lock-in. You could delete `kb` tomorrow and still have everything.
+All plain text. Opens in Obsidian. Lives in git. No database, no lock-in. You could delete `kb` tomorrow and still have everything. **Obsidian is optional; Claude is one possible agent, not a dependency.** Obsidian is one editor and graph viewer for these files; any file-capable agent that follows the printed playbook can do the thinking half.
+
+Use one KB for one durable domain or project instead of making one giant “entire life” vault. Use `kb new <name>` for a KB under your KB Home; use `kb init` when the knowledge intentionally belongs beside an existing code or work project. There is no implicit parent/child inheritance between KBs.
+
+If you know the Inputs → Process → Outputs → Feedback vocabulary, the existing layout already covers it:
+
+- **Inputs:** immutable sources in `raw/`.
+- **Process:** the pending handoff, printed playbook, and agent review.
+- **Outputs:** derived notes in `memories/` plus their `index.md` entries.
+- **Feedback:** `log.md` and the `status`, `reflect`, and `check` commands.
+
+These are workflow roles, not four extra folders.
 
 For a beginner, do **not** open a random folder and initialize it. Run `kb new research` from anywhere. It creates `~/kb/research/`, makes the first KB your default, and records it in `~/.config/kb/config.yaml`. **Research is just an example name**: use any simple name you want, such as `books` or `client-notes`, and replace `research` in the later commands and paths.
 
@@ -85,7 +96,7 @@ Try to answer in your own words first, then check.
 
 **3. Raw vs memories. Why two folders? What rule does the AI follow about `raw/`?**
 
-> `raw/` holds the **originals, immutable** — the source of truth. `memories/` holds the **AI's derived notes** — the useful, rewritable layer. The rule: **the AI never edits `raw/`.** If a summary is wrong, you fix the memory, never the source. This means you can always re-derive notes from untouched originals, and a bad AI pass can never corrupt your evidence.
+> `raw/` holds the **originals, immutable** — the source of truth. `memories/` holds the **AI's derived notes** — the useful, rewritable layer. The rule: **the AI never edits `raw/`.** If a summary is wrong, you fix the memory, never the source. This no-overwrite rule and Git history provide an integrity and tamper-detection convention; they are not an OS sandbox against a process running as you.
 
 **4. The upgrade. Friend has 200 notes, search feels slow. One command? What happens to existing notes? Who tells them?**
 

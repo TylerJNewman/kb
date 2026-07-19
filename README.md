@@ -1,6 +1,6 @@
 # kb CLI
 
-`kb` is an agent-first filing clerk for local markdown knowledge bases. The CLI scaffolds folders, stages raw sources, stamps the log, and prints precise playbooks. Your AI agent reads the sources, writes the Memories, and updates `index.md`. There is no LLM inside `kb`.
+`kb` is an agent-first filing clerk for local markdown knowledge bases. The CLI scaffolds folders, stages raw sources, stamps the log, and prints precise playbooks. Your AI agent reads the sources, writes the Memories, and updates `index.md`. There is no LLM inside `kb`. **Obsidian is optional; Claude is one possible agent, not a dependency.**
 
 ## Five-minute hello world
 

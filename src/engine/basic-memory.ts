@@ -45,6 +45,60 @@ export const SUPPORTED_BASIC_MEMORY_PACKAGE = `basic-memory==${SUPPORTED_BASIC_M
 const DEFAULT_ENGINE_TIMEOUT_MS = 30_000;
 const REINDEX_TIMEOUT_MS = 300_000;
 
+// Engine subprocesses need filesystem/runtime discovery, not the caller's full
+// credential set. Keep this list explicit so adding a new inherited capability
+// is a reviewed contract change instead of an ambient side effect.
+const ENGINE_OPERATIONAL_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "UV_CACHE_DIR",
+  "UV_PYTHON",
+  "UV_PYTHON_INSTALL_DIR",
+  "UV_TOOL_DIR",
+  "UV_TOOL_BIN_DIR",
+  "BASIC_MEMORY_CONFIG_DIR",
+  "FASTEMBED_CACHE_PATH",
+  "UV_SYSTEM_CERTS",
+  "UV_NATIVE_TLS",
+] as const;
+
+// A restricted parent must not accidentally grant the child network access,
+// configuration discovery, or managed-Python downloads by omitting the flag
+// that imposed the restriction.
+const ENGINE_CAPABILITY_DENIAL_ENV_KEYS = [
+  "UV_OFFLINE",
+  "UV_NO_CONFIG",
+  "UV_NO_SYSTEM_CONFIG",
+  "UV_PYTHON_DOWNLOADS",
+] as const;
+
+const ENGINE_CHILD_ENV_KEYS = [
+  ...ENGINE_OPERATIONAL_ENV_KEYS,
+  ...ENGINE_CAPABILITY_DENIAL_ENV_KEYS,
+] as const;
+
 const ENGINE_OPERATIONS = {
   bmAvailability: { label: "Basic Memory availability", timeoutMs: 5_000 },
   uvxAvailability: { label: "uvx availability", timeoutMs: 5_000 },
@@ -389,7 +443,7 @@ async function runExternal(
     const proc = Bun.spawn([command, ...args], {
       cwd,
       detached: true,
-      env: { ...process.env },
+      env: engineChildEnv(),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -450,6 +504,15 @@ async function runExternal(
     }
     throw error;
   }
+}
+
+function engineChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of ENGINE_CHILD_ENV_KEYS) {
+    const value = source[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 function operationFailure(

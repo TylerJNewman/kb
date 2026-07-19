@@ -96,6 +96,7 @@ async function expectNewCreatesOnlyScaffold(): Promise<void> {
   expect(await listTree(join(harness.home, "kb", "research"))).toEqual([
     ".git/",
     "AGENTS.md",
+    "CLAUDE.md",
     "index.md",
     "kb.yaml",
     "log.md",
@@ -111,6 +112,7 @@ async function expectInitCreatesOnlyScaffold(): Promise<void> {
   expect(await listTree(harness.cwd)).toEqual([
     ".git/",
     "AGENTS.md",
+    "CLAUDE.md",
     "index.md",
     "kb.yaml",
     "log.md",

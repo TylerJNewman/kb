@@ -1,6 +1,6 @@
 # Synthesis verbs emit playbooks: CLI owns deterministic half, agent owns meaning
 
-The CLI has no LLM, but its operator (an agent) does. For any verb that needs synthesis or review (`kb add`, `kb reflect`, `kb check`), the CLI performs the deterministic part (stage files into raw/, compute which memories changed since last reflect, append log, update index, find structural candidates) and then prints a playbook — precise instructions for the agent's half (write the executive summary, extract observations/relations, save to memories/, review candidates, run the follow-up command). We chose this over keeping synthesis instructions in external skill files.
+The CLI has no LLM, but its operator (an agent) does. For any verb that needs synthesis or review (`kb add`, `kb reflect`, `kb check`), the CLI performs the deterministic part (stage files into raw/, compute which memories changed since last reflect, append log, define and validate index rules, find structural candidates) and then prints a playbook — precise instructions for the agent's half (write the executive summary, extract observations/relations, save to memories/, write the meaning-dependent catalog entry, review candidates, run the follow-up command). We chose this over keeping synthesis instructions in external skill files.
 
 ## Considered Options
 
@@ -11,4 +11,4 @@ The CLI has no LLM, but its operator (an agent) does. For any verb that needs sy
 ## Consequences
 
 - Playbook text is a first-class, versioned product surface (like --help).
-- The code/model boundary is explicit: code owns files, index, log, search, and structural candidates; model owns meaning. Contradiction detection, semantic duplicate detection, stale-fact judgment, and note quality are model-side and must never be claimed as guarantees.
+- The code/model boundary is explicit: KB owns the index format, validation, uniqueness rules, completion gate, log contract, search, and structural candidates; the model owns meaning-dependent Memory content and catalog entries. Contradiction detection, semantic duplicate detection, stale-fact judgment, and note quality are model-side and must never be claimed as guarantees.

@@ -8,7 +8,7 @@ A person doing research or compiling information wants a place to keep what they
 
 ## Solution
 
-A single CLI, `kb`, that an AI agent drives on the user's behalf. One command scaffolds a knowledge base of plain markdown the user owns. The agent adds sources and writes synthesized memories through the CLI; the CLI does the deterministic bookkeeping (staging files, updating an index, appending a log) and prints a **playbook** telling the agent how to do the synthesis half. Everything starts engineless — plain files, no dependencies. When the knowledge base outgrows simple search, the CLI *notices* and *suggests* the upgrade with a one-line reason; the user runs one command (`kb enable search`) and the CLI lazily installs Basic Memory behind the same files, unlocking hybrid search with zero migration. The CLI teaches as it goes: `--help` carries rules of thumb, `--guide` walks the choice of system. The user stays in control; the defaults are good enough that they rarely need to.
+A single CLI, `kb`, that an AI agent drives on the user's behalf. One command scaffolds a knowledge base of plain markdown the user owns. The agent adds sources and writes synthesized memories through the CLI; the CLI does the deterministic bookkeeping (staging files, defining and validating the index contract, appending a log) and prints a **playbook** telling the agent how to do the synthesis half. Everything starts engineless — plain files, no dependencies. When the knowledge base outgrows simple search, the CLI *notices* and *suggests* the upgrade with a one-line reason; the user runs one command (`kb enable search`) and the CLI lazily installs Basic Memory behind the same files, unlocking hybrid search with zero migration. The CLI teaches as it goes: `--help` carries rules of thumb, `--guide` walks the choice of system. The user stays in control; the defaults are good enough that they rarely need to.
 
 ## User Stories
 
@@ -18,7 +18,7 @@ A single CLI, `kb`, that an AI agent drives on the user's behalf. One command sc
 3. As a user, I want `kb new <name>` to create a KB under a default KB Home (`~/kb/<name>/`), so that multiple knowledge bases organize themselves naturally.
 4. As a power user, I want `kb init` to scaffold a KB into whatever folder I'm already in (a project repo, an Obsidian vault, a Dropbox folder), so that I'm never confined to the default location.
 5. As a user standing in a dangerous root (`~` or `/`), I want `kb init` to warn me and point me at `kb new`, so that I don't scatter a scaffold across my home directory.
-6. As a user, I want the scaffold to include a thin `AGENTS.md`, so that any agent that opens the folder immediately knows to use the `kb` CLI and respects the raw/derived boundary.
+6. As a user, I want the scaffold to include a thin canonical `AGENTS.md` plus a one-line `CLAUDE.md` import, so that supported agents immediately know to use the `kb` CLI and respect the raw/derived boundary without duplicating instructions.
 7. As a user, I want my KB to be a self-contained folder with its own config (`kb.yaml`), so that I can move, copy, or share it without external state.
 8. As a user, I want the CLI to `git init` my KB silently if it isn't already a repo, so that history and reversibility are there when I later need them.
 9. As a user, I want an `index.md` catalog and an append-only `log.md` created from day one, so that my KB is navigable and its history is traceable before I've added anything.
@@ -80,6 +80,7 @@ A single CLI, `kb`, that an AI agent drives on the user's behalf. One command sc
 49. As a user, I want my entire KB to be nothing but a git repo of markdown plus a thin config, so that I get version history, portability, and zero lock-in.
 50. As a user, I want to open my KB in Obsidian and browse the files directly, so that I'm never trapped inside the CLI.
 51. As a user, I want the memory format to stay strictly compatible with the search engine's expected format, so that enabling search later never breaks my existing notes.
+52. As a user, I want optional engines and future connectors to receive only the capabilities they require, so that unrelated credentials in my agent environment are not forwarded accidentally.
 
 ## Implementation Decisions
 
@@ -94,11 +95,11 @@ A single CLI, `kb`, that an AI agent drives on the user's behalf. One command sc
 - **B2** — B1 plus scheduled reflect/check (scheduling itself deferred past v1).
 The default Arm for `kb new` is **B0**. Scaffold Arms are **wiki** and **b0** only; **b1** is reached with `kb enable search`, and **b2** is deferred. The upgrade path B0 → B1 → B2 is the mainline; A is a distinct choice surfaced by the guide.
 
-**Scaffold layout (per KB).** `kb.yaml` (arm, engine state, format version), thin `AGENTS.md` (points to `kb`, states the raw/derived boundary), `index.md` (markdown catalog, fixed line format — chosen over YAML for agent write-fluency), `log.md` (append-only, greppable `## [date] verb | title` prefixes), `raw/` (immutable sources), `memories/` (derivatives in Basic Memory note format). Silent `git init` if not already a repo.
+**Scaffold layout (per KB).** `kb.yaml` (arm, engine state, format version), thin `AGENTS.md` (canonical agent instructions; points to `kb` and states the raw/derived boundary), `CLAUDE.md` (one-line `@AGENTS.md` compatibility import), `index.md` (markdown catalog, fixed line format — chosen over YAML for agent write-fluency), `log.md` (append-only, greppable `## [date] verb | title` prefixes), `raw/` (immutable sources), `memories/` (derivatives in Basic Memory note format). Silent `git init` if not already a repo.
 
 **Note format contract.** Memories are written in Basic Memory's `NOTE-FORMAT.md` shape: frontmatter (`title`, `type`, `tags`, `permalink`), observations as `- [category] content #tag`, relations as `- relation_type [[Target]]`. This compatibility is a tested contract so B0 → B1 needs zero migration.
 
-**Playbook boundary (ADR-0003).** Synthesis verbs (`add`, `reflect`, `check`, and wiki add) do the deterministic half in code (stage files, diff notes-since-last-run, update index/log) then print a playbook for the agent's meaning-making half. Code owns files/index/log/search; the model owns meaning. Contradiction detection, semantic duplicate detection, stale-fact judgment, and note quality are model-side and are never claimed as guarantees.
+**Playbook boundary (ADR-0003).** Synthesis verbs (`add`, `reflect`, `check`, and wiki add) do the deterministic half in code (stage files, diff notes-since-last-run, define and validate index/log contracts) then print a playbook for the agent's meaning-making half. KB owns the index format, validation, uniqueness rules, and completion gate. The agent writes meaning-dependent titles, categories, summaries, Memory content, and catalog entries. Contradiction detection, semantic duplicate detection, stale-fact judgment, and note quality are model-side and are never claimed as guarantees.
 
 **KB Home and Registry.** Default KB Home is `~/kb/`; `kb new <name>` scaffolds `~/kb/<name>/`. `kb init` scaffolds into the current directory (warns if cwd is `~` or `/`). A global Registry at `~/.config/kb/config.yaml` records KB paths and the default KB; it is rebuildable by scanning KB Home, so it's convenient but never authoritative over the files.
 
@@ -107,6 +108,15 @@ The default Arm for `kb new` is **B0**. Scaffold Arms are **wiki** and **b0** on
 **`kb enable search`.** The one real integration in v1: detect/lazy-run Basic Memory through the pinned `uvx --from basic-memory==0.22.1 bm` runner, add the project, reindex, flip `kb.yaml` engine state so `kb search` routes to hybrid search. This deliberately proves the ADR-0001 wrapping bet early.
 
 **Command surface (v1).** `new`, `init`, `list`, `status`, `add`, `draft`, `search`, `read`, `log`, `enable search`, `reflect`, `check`, plus `--help`/`--guide` and target flag `--in <name>`.
+
+## Security and capability boundary
+
+- KB stores no provider OAuth credentials. A calendar, mail, transcript, or other adapter owns its authentication and gives KB an artifact plus provenance through the public `kb add` contract.
+- Read-only and provider-scoped credentials are the default; use per-KB and single-purpose credentials where the provider or external runner supports them. Send, delete, or broad-write capabilities require an explicit opt-in in the external runner that owns those capabilities.
+- Secrets do not belong anywhere in a KB, including raw artifacts, Memories, `index.md`, `log.md`, `kb.yaml`, operational receipts, or Memory frontmatter. Producers must redact or withhold secret-bearing data before ingestion.
+- Engine subprocesses inherit an explicit operational allowlist (paths, home/XDG locations, temporary directories, locale, certificate/proxy settings, and non-secret uv runtime locations), not the caller's complete environment.
+- Future schedulers must invoke public noninteractive CLI contracts and preserve handoffs, validation, and receipts. Scheduling is not permission to bypass the agent/CLI boundary.
+- “Immutable raw” is an integrity contract: KB never overwrites raw bytes and detects later tampering. It is not an OS sandbox against another process running as the same user.
 
 ## Testing Decisions
 

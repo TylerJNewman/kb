@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdir, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createKbHarness, type KbHarness } from "./helpers/subprocess";
 
@@ -19,6 +19,7 @@ test("kb new removes every ordinary failed transaction and the same command retr
     "after-stage-directory",
     "after-kb-yaml",
     "after-agents-md",
+    "after-claude-md",
     "after-index-md",
     "after-log-md",
     "after-raw",
@@ -96,6 +97,56 @@ test("initial atomic receipt temp is recoverable for new and init", async () => 
   expect(await readdir(initCwd)).toContain(".kb-scaffold-transaction.json.tmp");
   const retriedInit = await harness.run("kb", ["init"], { cwd: initCwd });
   expect(retriedInit.code, retriedInit.stderr).toBe(0);
+});
+
+test("a legacy schema-version-1 receipt past index.md recovers and adds the Claude shim", async () => {
+  const interrupted = await harness.run("kb", ["init"], {
+    env: { KB_EXIT_SCAFFOLD_TRANSACTION: "after-index-md" },
+  });
+  expect(interrupted.code).toBe(86);
+  const receiptPath = join(harness.cwd, ".kb-scaffold-transaction.json");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8")) as { schemaVersion: number; artifacts: Array<{ path: string }> };
+  expect(receipt.schemaVersion).toBe(1);
+  receipt.artifacts = receipt.artifacts.filter((artifact) => artifact.path !== "CLAUDE.md");
+  await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  await rm(join(harness.cwd, "CLAUDE.md"));
+
+  const recovered = await harness.runKb(["init"]);
+
+  expect(recovered.code, recovered.stderr).toBe(0);
+  expect(await readFile(join(harness.cwd, "CLAUDE.md"), "utf8")).toBe("@AGENTS.md\n");
+});
+
+test("a complete legacy receipt preserves its original log across a UTC date boundary", async () => {
+  const failed = await harness.run("kb", ["init"], {
+    env: { KB_NOW: "2026-07-18T23:59:00.000Z", KB_FAIL_SCAFFOLD_TRANSACTION: "after-registry" },
+  });
+  expect(failed.code).toBe(69);
+  const receiptPath = join(harness.cwd, ".kb-scaffold-transaction.json");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8")) as { schemaVersion: number; phase: string; artifacts: Array<{ path: string }> };
+  expect(receipt.schemaVersion).toBe(1);
+  expect(receipt.phase).toBe("registered");
+  receipt.artifacts = receipt.artifacts.filter((artifact) => artifact.path !== "CLAUDE.md");
+  await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  await rm(join(harness.cwd, "CLAUDE.md"));
+
+  const normalizationInterrupted = await harness.run("kb", ["init"], {
+    env: {
+      KB_NOW: "2026-07-19T00:01:00.000Z",
+      KB_FAIL_SCAFFOLD_TRANSACTION: "after-legacy-normalization",
+    },
+  });
+  expect(normalizationInterrupted.code).toBe(69);
+  expect(await readFile(join(harness.cwd, "CLAUDE.md"), "utf8")).toBe("@AGENTS.md\n");
+
+  const recovered = await harness.run("kb", ["init"], {
+    env: { KB_NOW: "2026-07-20T00:01:00.000Z" },
+  });
+
+  expect(recovered.code, recovered.stderr).toBe(0);
+  expect(await readFile(join(harness.cwd, "log.md"), "utf8")).toContain("## [2026-07-18] created | cwd");
+  expect(await readFile(join(harness.cwd, "CLAUDE.md"), "utf8")).toBe("@AGENTS.md\n");
+  expect(await readdir(harness.cwd)).not.toContain(".kb-scaffold-transaction.json");
 });
 
 test("same-name kb new commands serialize the target transaction", async () => {
@@ -225,7 +276,7 @@ test("a pre-commit Registry lock failure cleans the scaffold without a second lo
 });
 
 test("kb init rolls back every injected scaffold phase and retries in the same existing folder", async () => {
-  const phases = ["after-kb-yaml", "after-agents-md", "after-index-md", "after-log-md", "after-raw", "after-memories", "after-git"];
+  const phases = ["after-kb-yaml", "after-agents-md", "after-claude-md", "after-index-md", "after-log-md", "after-raw", "after-memories", "after-git"];
 
   for (const [index, phase] of phases.entries()) {
     const cwd = join(harness.root, `init-${index}`);
@@ -274,6 +325,7 @@ test("kb init preserves concurrent edits, remains needs-attention, and retries a
   expect(await readFile(join(harness.cwd, "kb.yaml"), "utf8")).toBe("concurrent user edit\n");
   expect(await readFile(join(harness.cwd, "keep.txt"), "utf8")).toBe("keep\n");
   expect(await readdir(harness.cwd)).toContain("AGENTS.md");
+  expect(await readFile(join(harness.cwd, "CLAUDE.md"), "utf8")).toBe("@AGENTS.md\n");
 
   const stillBlocked = await harness.runKb(["init"]);
   expect(stillBlocked.code).toBe(69);

@@ -49,6 +49,15 @@ Pointing a pipe at a KB may automate physical ingestion. It must not pretend to 
 
 KB remains the only public interface. The underlying engine remains an internal adapter and may still be identified accurately in architecture and license documentation.
 
+### Capability and credential boundary
+
+- Producers and connectors own OAuth tokens and provider credentials; KB accepts only the resulting artifact, source identity, and capture time.
+- Read-only and provider-scoped credentials are the default; use per-KB and single-purpose credentials where the provider or external runner supports them. Sending, deleting, or broad remote writes require explicit opt-in outside KB.
+- Secrets must not be written anywhere in a KB, including raw artifacts, configuration, operational receipts, logs, Memory frontmatter, or derived notes. Producers must redact or withhold secret-bearing data before ingestion.
+- Basic Memory subprocesses receive an explicit operational environment allowlist rather than the invoking agent's ambient credentials.
+- A future scheduler must call the public noninteractive commands below and preserve the same locks, handoffs, validation, and receipts.
+- Raw immutability means no-overwrite storage plus hash-based tamper detection. It does not claim filesystem isolation from another same-user process.
+
 ## Delivery order
 
 1. **Ticket 1: Machine-safe Add handoff v2.**
@@ -340,6 +349,19 @@ kb add "$ARTIFACT_PATH" \
 The pipe stops after receiving the durable handoff receipt. It does not choose a type, create a schema, update `index.md`, invoke the engine, or wait for an agent.
 
 An agent later resumes the handoff and completes it with derivatives or a raw-only reason.
+
+The same producer seam applies to other sources. For example, a read-only calendar exporter owns Google authentication and emits one local artifact:
+
+```bash
+kb add "$CALENDAR_EXPORT" \
+  --source google-calendar \
+  --source-id "$EXPORT_EVENT_ID" \
+  --captured-at "$CAPTURED_AT" \
+  --in work \
+  --json
+```
+
+KB does not receive the OAuth token, call Google APIs, or gain send/delete access.
 
 ## Recovery behavior
 

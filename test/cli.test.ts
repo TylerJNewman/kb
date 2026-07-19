@@ -382,6 +382,7 @@ Next: kb add <file-or-url>
   expect(await listTree(kbDir)).toEqual([
     ".git/",
     "AGENTS.md",
+    "CLAUDE.md",
     "index.md",
     "kb.yaml",
     "log.md",
@@ -399,6 +400,7 @@ lastReflectAt: null
 `);
   expect(await readFile(join(kbDir, "AGENTS.md"), "utf8")).toContain("Use the `kb` CLI");
   expect(await readFile(join(kbDir, "AGENTS.md"), "utf8")).toContain("Raw/derived boundary: never modify files in `raw/`.");
+  expect(await readFile(join(kbDir, "CLAUDE.md"), "utf8")).toBe("@AGENTS.md\n");
   expect(await readFile(join(kbDir, "index.md"), "utf8")).toBe(`# KB Index
 
 Line format:
@@ -474,6 +476,7 @@ Next: kb add <file-or-url>
   expect(result.stderr).toBe("");
   expect(await listTree(join(harness.home, "kb", "research"))).toEqual([
     "AGENTS.md",
+    "CLAUDE.md",
     "index.md",
     "kb.yaml",
     "log.md",
@@ -510,6 +513,7 @@ Next: kb add <file-or-url>
   expect(await listTree(harness.cwd)).toEqual([
     ".git/",
     "AGENTS.md",
+    "CLAUDE.md",
     "index.md",
     "kb.yaml",
     "log.md",
