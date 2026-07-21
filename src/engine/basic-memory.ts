@@ -1,5 +1,7 @@
 import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
+import { isCanonicalMemoryRef } from "../memory-format";
 import type {
   EngineConfigPatch,
   EngineProject,
@@ -153,17 +155,17 @@ export class BasicMemoryAdapter implements SchemaEngineAdapter {
       project,
       path: await canonicalProjectPath(project.localPath),
     })));
-    const named = canonicalProjects.find(({ project }) => project.name === projectName);
-    if (named !== undefined && named.path !== canonicalPath) {
-      return projectConflict(projectName, named.project.localPath, canonicalPath);
-    }
-    const registeredPath = canonicalProjects.find(({ path }) => path === canonicalPath);
-    let selectedName = registeredPath?.project.name ?? projectName;
+    const named = canonicalProjects.filter(({ project }) => project.name === projectName);
+    const registeredPath = canonicalProjects.filter(({ path }) => path === canonicalPath);
+    const existing = resolveUniqueProjectBinding(named, registeredPath, projectName, canonicalPath);
+    if (existing.ok === false) return existing;
+    const selectedName = existing.value?.project.name ?? projectName;
+    let verifiedProjects = listed.value;
 
-    if (registeredPath === undefined) {
+    if (existing.value === null) {
       const added = await this.runWithRunner(
         runner.value,
-        ["project", "add", selectedName, kbPath],
+        ["project", "add", projectName, kbPath],
         kbPath,
         ENGINE_OPERATIONS.projectAdd,
       );
@@ -172,18 +174,12 @@ export class BasicMemoryAdapter implements SchemaEngineAdapter {
       if (relisted.ok === false) {
         return relisted;
       }
-      const winner = relisted.value.find((project) => project.name === projectName);
-      if (winner === undefined) {
-        return addFailure ?? { ok: false, message: "Basic Memory project add did not register the project." };
-      }
-      const winnerPath = await canonicalProjectPath(winner.localPath);
-      if (winnerPath !== canonicalPath) {
-        return projectConflict(projectName, winner.localPath, canonicalPath);
-      }
-      selectedName = winner.name;
+      const verified = await this.requireProjectBinding(kbPath, projectName, relisted.value);
+      if (verified.ok === false) return addFailure ?? verified;
+      verifiedProjects = relisted.value;
     }
 
-    const reindexed = await this.reindex(kbPath, selectedName);
+    const reindexed = await this.reindex(kbPath, selectedName, verifiedProjects);
     if (reindexed.ok === false) {
       return reindexed;
     }
@@ -225,7 +221,9 @@ export class BasicMemoryAdapter implements SchemaEngineAdapter {
     return { ok: true, value: projects };
   }
 
-  async reindex(kbPath: string, projectName: string): Promise<EngineResult<void>> {
+  async reindex(kbPath: string, projectName: string, knownProjects?: EngineProject[]): Promise<EngineResult<void>> {
+    const binding = await this.requireProjectBinding(kbPath, projectName, knownProjects);
+    if (binding.ok === false) return binding;
     const run = await this.run(
       ["reindex", "--project", projectName, "--search"],
       kbPath,
@@ -239,6 +237,8 @@ export class BasicMemoryAdapter implements SchemaEngineAdapter {
     projectName: string,
     query: string,
   ): Promise<EngineResult<EngineSearchResult[]>> {
+    const binding = await this.requireProjectBinding(kbPath, projectName);
+    if (binding.ok === false) return binding;
     const run = await this.run(
       ["tool", "search-notes", query, "--project", projectName],
       kbPath,
@@ -361,6 +361,31 @@ export class BasicMemoryAdapter implements SchemaEngineAdapter {
     const result = await this.runWithRunner(runner.value, args, cwd, operation);
     const failure = operationFailure(operation, result, runner.value);
     return failure ?? { ok: true, value: result };
+  }
+
+  private async requireProjectBinding(
+    kbPath: string,
+    projectName: string,
+    knownProjects?: EngineProject[],
+  ): Promise<EngineResult<void>> {
+    const listed = knownProjects === undefined ? await this.listProjects(kbPath) : { ok: true as const, value: knownProjects };
+    if (listed.ok === false) return listed;
+    const canonicalPath = await canonicalProjectPath(kbPath);
+    const canonicalProjects = await Promise.all(listed.value.map(async (project) => ({
+      project,
+      path: await canonicalProjectPath(project.localPath),
+    })));
+    const validated = resolveUniqueProjectBinding(
+      canonicalProjects.filter(({ project }) => project.name === projectName),
+      canonicalProjects.filter(({ path }) => path === canonicalPath),
+      projectName,
+      canonicalPath,
+    );
+    return validated.ok === false
+      ? validated
+      : validated.value?.project.name === projectName
+        ? { ok: true, value: undefined }
+        : { ok: false, message: `Basic Memory project '${projectName}' is not bound to ${canonicalPath}. Run \`kb enable search\` to repair it.` };
   }
 
   private async resolveRunner(cwd: string): Promise<EngineResult<EngineRunner>> {
@@ -771,11 +796,44 @@ function parseProject(value: unknown): EngineProject | null {
 }
 
 async function canonicalProjectPath(path: string): Promise<string> {
+  const expanded = path === "~"
+    ? homedir()
+    : path.startsWith("~/")
+      ? resolve(homedir(), path.slice(2))
+      : path;
   try {
-    return await realpath(path);
+    return await realpath(expanded);
   } catch {
-    return resolve(path);
+    return resolve(expanded);
   }
+}
+
+type CanonicalProjectBinding = { project: EngineProject; path: string };
+
+function resolveUniqueProjectBinding(
+  named: CanonicalProjectBinding[],
+  registeredPath: CanonicalProjectBinding[],
+  projectName: string,
+  expectedPath: string,
+): EngineResult<CanonicalProjectBinding | null> {
+  if (named.length > 1) {
+    return { ok: false, message: `Basic Memory project identity is ambiguous: ${named.length} projects are named '${projectName}'.` };
+  }
+  if (named.length === 1) {
+    return named[0]!.path === expectedPath
+      ? { ok: true, value: named[0]! }
+      : projectConflict(projectName, named[0]!.project.localPath, expectedPath);
+  }
+  if (registeredPath.length === 0) {
+    return { ok: true, value: null };
+  }
+  if (registeredPath.length === 1) {
+    return { ok: true, value: registeredPath[0]! };
+  }
+  return {
+    ok: false,
+    message: `Basic Memory project identity is ambiguous: ${registeredPath.length} projects point to ${expectedPath}, and none is named '${projectName}'.`,
+  };
 }
 
 function projectConflict(projectName: string, registeredPath: string, expectedPath: string): EngineResult<never> {
@@ -786,7 +844,7 @@ function projectConflict(projectName: string, registeredPath: string, expectedPa
 }
 
 function normalizeBasicMemoryResult(value: JsonRecord): EngineSearchResult | null {
-  if (typeof value.file_path !== "string" || !/^memories\/[^/.][^/]*\.md$/.test(value.file_path)) {
+  if (typeof value.file_path !== "string" || !isCanonicalMemoryRef(value.file_path)) {
     return null;
   }
   const title = typeof value.title === "string" && value.title.length > 0

@@ -261,7 +261,7 @@ test("kb schema diff fails closed when the Engine reports no schema", async () =
 await harness.writeFakeExecutable("bm", `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "list" ]; then
-  printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'
+  printf '{"projects":[{"name":"research","local_path":"~/kb/research"}]}\\n'
   exit 0
 fi
 if [ "$1" = "reindex" ]; then exit 0; fi
@@ -290,6 +290,32 @@ printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "list" ]; then
   printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'
+  exit 0
+fi
+if [ "$1" = "reindex" ]; then exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "add" ]; then echo 'unexpected project add' >&2; exit 2; fi
+exit 2
+`);
+
+  const result = await harness.runKb(["enable", "search", "--in", "research"]);
+
+  expect(result).toEqual({
+    code: 0,
+    stdout: "Search enabled for research. Arm: b1. Existing files unchanged.\n",
+    stderr: "",
+  });
+  expect(await readFile(join(harness.home, "engine-calls"), "utf8")).toBe(
+    `bm --version\nbm project list --local --json\nbm reindex --project research --search\n`,
+  );
+});
+
+test("kb enable search accepts an exact binding when Basic Memory also has a same-path alias", async () => {
+  const kbDir = await scaffoldResearchKb();
+  await harness.writeFakeExecutable("bm", `#!/bin/sh
+printf 'bm %s\\n' "$*" >> "$HOME/engine-calls"
+if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then
+  printf '{"projects":[{"name":"research","local_path":"%s"},{"name":"research-alias","local_path":"%s"}]}\\n' '${kbDir}' '${kbDir}'
   exit 0
 fi
 if [ "$1" = "reindex" ]; then exit 0; fi

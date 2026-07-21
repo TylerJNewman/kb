@@ -139,6 +139,7 @@ if [ "$1" = "--version" ]; then echo 'uvx 0.8.0'; exit 0; fi
 if [ "$1" != "--from" ] || [ "$2" != "basic-memory==0.22.1" ] || [ "$3" != "bm" ]; then exit 91; fi
 shift 3
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'; exit 0; fi
 if [ "$1" = "reindex" ]; then exit 0; fi
 if [ "$1" = "schema" ] && [ "$2" = "infer" ]; then /bin/cat '${join(fixtureDir, "schema-infer.json")}'; exit 0; fi
 exit 92
@@ -170,6 +171,7 @@ exit 92
   });
   expect(await readFile(join(root, "calls"), "utf8")).toBe(`--version
 --from basic-memory==0.22.1 bm --version
+--from basic-memory==0.22.1 bm project list --local --json
 --from basic-memory==0.22.1 bm reindex --project research --search
 --from basic-memory==0.22.1 bm schema infer meeting --project research --threshold 0.4 --json --local
 `);
@@ -186,6 +188,7 @@ if [ "$1" = "--from" ] && [ "$2" = "basic-memory==0.22.1" ] && [ "$3" = "bm" ] &
   echo 'Basic Memory version: 0.22.1'
   exit 0
 fi
+if [ "$1" = "--from" ] && [ "$4" = "project" ] && [ "$5" = "list" ]; then printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'; exit 0; fi
 if [ "$1" = "--from" ] && [ "$4" = "tool" ]; then /bin/cat '${join(fixtureDir, "search-empty.json")}'; exit 0; fi
 exit 92
 `);
@@ -193,6 +196,7 @@ exit 92
   expect(await new BasicMemoryAdapter().search(kbDir, "research", "meeting")).toEqual({ ok: true, value: [] });
   expect(await readFile(join(root, "calls"), "utf8")).toBe(`--version
 --from basic-memory==0.22.1 bm --version
+--from basic-memory==0.22.1 bm project list --local --json
 --from basic-memory==0.22.1 bm tool search-notes meeting --project research
 `);
 });
@@ -201,6 +205,7 @@ test.serial("schema validation and diff normalize JSON without passing mutation 
   await fakeExecutable("bm", `#!/bin/sh
 printf '%s\\n' "$*" >> '${join(root, "calls")}'
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'; exit 0; fi
 if [ "$1" = "reindex" ]; then exit 0; fi
 if [ "$1" = "schema" ] && [ "$2" = "validate" ]; then /bin/cat '${join(fixtureDir, "schema-validate.json")}'; exit 0; fi
 if [ "$1" = "schema" ] && [ "$2" = "diff" ]; then /bin/cat '${join(fixtureDir, "schema-diff.json")}'; exit 0; fi
@@ -267,6 +272,7 @@ if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
 test.serial("schema operations reject JSON that omits required normalized fields", async () => {
   await fakeExecutable("bm", `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'; exit 0; fi
 if [ "$1" = "reindex" ]; then exit 0; fi
 /bin/cat '${join(fixtureDir, "schema-infer-missing-fields.json")}'
 `);
@@ -280,6 +286,7 @@ if [ "$1" = "reindex" ]; then exit 0; fi
 test.serial("search keeps Memory results, filters infrastructure, and rejects malformed Memory results", async () => {
   await fakeExecutable("bm", `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'; exit 0; fi
 if [ "$1" = "tool" ]; then
   /bin/cat '${join(fixtureDir, "search-mixed.json")}'
   exit 0
@@ -290,11 +297,15 @@ exit 92
   const adapter = new BasicMemoryAdapter();
   expect(await adapter.search(kbDir, "research", "meeting")).toEqual({
     ok: true,
-    value: [{ ref: "memories/meeting.md", title: "Meeting", match: "fact", score: 0.8 }],
+    value: [
+      { ref: "memories/meeting.md", title: "Meeting", match: "fact", score: 0.8 },
+      { ref: "memories/projects/acme/call.md", title: "Acme Call", match: "nested fact", score: 0.7 },
+    ],
   });
 
   await fakeExecutable("bm", `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'; exit 0; fi
 /bin/cat '${join(fixtureDir, "search-malformed-memory.json")}'
 `);
   const malformed = await new BasicMemoryAdapter().search(kbDir, "research", "meeting");
@@ -308,6 +319,7 @@ test.serial("a timed-out Engine operation terminates its descendant process grou
   const childPidPath = join(root, "child-pid");
   await fakeExecutable("bm", `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'; exit 0; fi
 /bin/sleep 30 &
 child=$!
 printf '%s' "$child" > '${childPidPath}'
@@ -330,6 +342,7 @@ test.serial("SIGTERM is forwarded to the Engine process group and remains distin
   const enginePidPath = join(root, "engine-pid");
   await fakeExecutable("bm", `#!/bin/sh
 if [ "$1" = "--version" ]; then echo 'Basic Memory version: 0.22.1'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "list" ]; then printf '{"projects":[{"name":"research","local_path":"%s"}]}\\n' '${kbDir}'; exit 0; fi
 printf '%s' "$$" > '${enginePidPath}'
 /bin/sleep 30
 `);

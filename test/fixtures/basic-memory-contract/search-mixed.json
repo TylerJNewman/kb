@@ -11,6 +11,12 @@
       "file_path": "memories/meeting.md",
       "matched_chunk": "fact",
       "score": 0.8
+    },
+    {
+      "title": "Acme Call",
+      "file_path": "memories/projects/acme/call.md",
+      "matched_chunk": "nested fact",
+      "score": 0.7
     }
   ]
 }

@@ -161,11 +161,11 @@ export function parseBasicMemoryDocument(ref: string, text: string): MemoryDecod
     ok: true,
     value: {
       ref,
-      title: frontmatter.values.title,
-      slug: frontmatter.values.permalink,
-      supersededBy: frontmatter.values.superseded_by ?? null,
-      reviewAfter: frontmatter.values.review_after ?? null,
-      staleAfter: frontmatter.values.stale_after ?? null,
+      title: frontmatter.values.title as string,
+      slug: frontmatter.values.permalink as string,
+      supersededBy: optionalFrontmatterString(frontmatter.values, "superseded_by"),
+      reviewAfter: optionalFrontmatterString(frontmatter.values, "review_after"),
+      staleAfter: optionalFrontmatterString(frontmatter.values, "stale_after"),
       links: parseWikiLinks(memoryBody(text)),
     },
   };
@@ -215,9 +215,9 @@ export function parseCatalog(text: string): CatalogDecodeResult {
   return { entries, issues };
 }
 
-type DetailedFrontmatterResult = { values: Record<string, string>; issues: string[] };
+type DetailedFrontmatterResult = { values: Record<string, unknown>; issues: string[] };
 
-function parseBasicMemoryFrontmatterDetailed(text: string): DetailedFrontmatterResult {
+function parseYamlFrontmatter(text: string): DetailedFrontmatterResult {
   if (!text.startsWith("---\n")) {
     return { values: {}, issues: ["missing Basic Memory frontmatter"] };
   }
@@ -226,49 +226,53 @@ function parseBasicMemoryFrontmatterDetailed(text: string): DetailedFrontmatterR
     return { values: {}, issues: ["unterminated Basic Memory frontmatter"] };
   }
 
-  const values: Record<string, string> = {};
+  let values: Record<string, unknown>;
   const issues: string[] = [];
-  let listKey: string | null = null;
-  for (const [index, line] of text.slice(4, end).split("\n").entries()) {
-    const lineNumber = index + 2;
-    if (listKey !== null && line.startsWith("  - ")) {
-      if (parseYamlScalar(line.slice(4)) === null) {
-        issues.push(`frontmatter line ${lineNumber} has an invalid ${listKey} scalar`);
-      }
-      continue;
+  const source = text.slice(4, end);
+  for (const key of duplicateTopLevelYamlKeys(source)) {
+    issues.push(`frontmatter has duplicate ${key}`);
+  }
+  try {
+    const parsed = Bun.YAML.parse(source) as unknown;
+    if (!isYamlMapping(parsed)) {
+      return { values: {}, issues: [...issues, "frontmatter must be a YAML mapping"] };
     }
-    listKey = null;
-    const separator = line.indexOf(":");
-    if (separator === -1) {
-      if (line.trim().length > 0) {
-        issues.push(`frontmatter line ${lineNumber} is malformed`);
-      }
-      continue;
-    }
-    const key = line.slice(0, separator);
-    const rawValue = line.slice(separator + 1).trimStart();
-    if (Object.hasOwn(values, key)) {
-      issues.push(`frontmatter has duplicate ${key}`);
-      continue;
-    }
-    if (rawValue.length === 0 && (key === "tags" || key === "source_refs")) {
-      listKey = key;
-      continue;
-    }
-    const value = parseYamlScalar(rawValue);
-    if (value === null || value.length === 0) {
-      issues.push(`frontmatter ${key} is empty or invalid`);
-      continue;
-    }
-    values[key] = value;
+    values = parsed;
+  } catch {
+    return { values: {}, issues: [...issues, "frontmatter is malformed YAML"] };
   }
 
+  return { values, issues };
+}
+
+function parseBasicMemoryFrontmatterDetailed(text: string): DetailedFrontmatterResult {
+  const parsed = parseYamlFrontmatter(text);
+  const issues = [...parsed.issues];
   for (const key of ["title", "type", "permalink"] as const) {
-    if (!Object.hasOwn(values, key)) {
+    if (!Object.hasOwn(parsed.values, key)) {
       issues.push(`frontmatter is missing ${key}`);
+    } else if (typeof parsed.values[key] !== "string" || parsed.values[key].length === 0) {
+      issues.push(`frontmatter ${key} is empty or invalid`);
     }
   }
-  return { values, issues };
+  return { values: parsed.values, issues };
+}
+
+function isYamlMapping(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function duplicateTopLevelYamlKeys(source: string): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const line of source.split("\n")) {
+    const match = /^([A-Za-z_][A-Za-z0-9_-]*):/.exec(line);
+    if (match === null) continue;
+    const key = match[1]!;
+    if (seen.has(key)) duplicates.add(key);
+    seen.add(key);
+  }
+  return [...duplicates].sort();
 }
 
 function parseWikiLinks(text: string): string[] {
@@ -308,39 +312,64 @@ function isIsoCalendarDate(value: string): boolean {
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
-function canonicalFrontmatterIssues(values: Record<string, string>): string[] {
+function canonicalFrontmatterIssues(values: Record<string, unknown>): string[] {
   const issues: string[] = [];
-  if (values.title !== undefined) {
+  if (typeof values.title === "string") {
     const titleValidation = validateMemoryTitle(values.title);
     if (!titleValidation.ok) {
       issues.push(titleValidation.message);
     }
   }
-  if (values.permalink !== undefined && hasControlCharacter(values.permalink)) {
+  if (typeof values.permalink === "string" && hasControlCharacter(values.permalink)) {
     issues.push("frontmatter permalink contains a control character");
   }
   for (const key of ["review_after", "stale_after"] as const) {
     const value = values[key];
-    if (value !== undefined && !isIsoCalendarDate(value)) {
+    if (value !== undefined && (typeof value !== "string" || !isIsoCalendarDate(value))) {
       issues.push(`frontmatter ${key} must be an ISO calendar date`);
     }
   }
   return issues;
 }
 
-function isCanonicalMemoryRef(ref: string): boolean {
-  return /^memories\/[^/]+\.md$/.test(ref) && ref !== "memories/<file>.md";
+export function isCanonicalMemoryRef(ref: string): boolean {
+  if (!ref.startsWith("memories/") || !ref.endsWith(".md") || ref === "memories/<file>.md") {
+    return false;
+  }
+  const segments = ref.slice("memories/".length).split("/");
+  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..")
+    && segments.at(-1) !== ".md";
 }
 
 export function readBasicMemoryScalar(text: string, key: string): string | null {
   if (text.startsWith("---\n")) {
-    const frontmatter = parseBasicMemoryFrontmatterDetailed(text);
-    if (frontmatter.issues.length > 0 || canonicalFrontmatterIssues(frontmatter.values).length > 0) {
+    const frontmatter = parseYamlFrontmatter(text);
+    if (frontmatter.issues.length > 0) {
       return null;
     }
-    return frontmatter.values[key] ?? null;
+    const value = frontmatter.values[key];
+    return typeof value === "string" ? value : null;
   }
   return readYamlScalarFromText(text, key);
+}
+
+export function readBasicMemoryStringList(text: string, key: string): string[] | null {
+  if (!text.startsWith("---\n")) return null;
+  const frontmatter = parseYamlFrontmatter(text);
+  if (frontmatter.issues.length > 0) {
+    return null;
+  }
+  const value = frontmatter.values[key];
+  if (Array.isArray(value)) {
+    return value.every((item) => typeof item === "string" && item.length > 0) ? value : null;
+  }
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const items = value.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
+  return items.length > 0 ? items : null;
+}
+
+function optionalFrontmatterString(values: Record<string, unknown>, key: string): string | null {
+  return typeof values[key] === "string" ? values[key] : null;
 }
 
 function assertMemoryTitle(title: string): void {

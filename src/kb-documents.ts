@@ -27,7 +27,7 @@ export type KbDocuments = {
  */
 export async function readKbDocuments(kbPath: string): Promise<KbDocuments> {
   const baseIssues: string[] = [];
-  const [indexText, memoryEntries] = await Promise.all([
+  const [indexText, memoryFiles] = await Promise.all([
     readFile(join(kbPath, "index.md"), "utf8").catch((error: unknown) => {
       if (isMissing(error)) {
         baseIssues.push("missing index.md");
@@ -35,7 +35,7 @@ export async function readKbDocuments(kbPath: string): Promise<KbDocuments> {
       }
       throw error;
     }),
-    readdir(join(kbPath, "memories"), { withFileTypes: true }).catch((error: unknown) => {
+    listMemoryMarkdownRefs(kbPath).catch((error: unknown) => {
       if (isMissing(error)) {
         baseIssues.push("missing memories");
         return [];
@@ -44,15 +44,10 @@ export async function readKbDocuments(kbPath: string): Promise<KbDocuments> {
     }),
   ]);
   const catalog = parseCatalog(indexText);
-  const memoryFiles = memoryEntries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name)
-    .sort();
   const memories: CanonicalMemory[] = [];
   const issues = [...baseIssues, ...catalog.issues];
 
-  for (const file of memoryFiles) {
-    const ref = `memories/${file}`;
+  for (const ref of memoryFiles) {
     const path = join(kbPath, ref);
     const [text, metadata] = await Promise.all([readFile(path, "utf8"), stat(path)]);
     const decoded = parseBasicMemoryDocument(ref, text);
@@ -82,8 +77,28 @@ export async function readKbDocuments(kbPath: string): Promise<KbDocuments> {
   };
 }
 
+export async function listMemoryMarkdownRefs(kbPath: string): Promise<string[]> {
+  const root = join(kbPath, "memories");
+  const refs: string[] = [];
+
+  async function walk(relativeDirectory: string): Promise<void> {
+    const directory = join(root, relativeDirectory);
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const relative = relativeDirectory.length === 0 ? entry.name : `${relativeDirectory}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(relative);
+      } else if (entry.isFile() && entry.name.endsWith(".md")) {
+        refs.push(`memories/${relative}`);
+      }
+    }
+  }
+
+  await walk("");
+  return refs.sort();
+}
+
 function isMissing(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
+  return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }
 
 function compareDocumentIssues(left: string, right: string): number {

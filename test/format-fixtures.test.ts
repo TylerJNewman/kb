@@ -13,6 +13,7 @@ import {
   parseCatalog,
   parseIndexLine,
   readBasicMemoryScalar,
+  readBasicMemoryStringList,
   RELATION_EXAMPLE,
   slugForMemoryTitle,
   validateMemoryTitle,
@@ -97,7 +98,7 @@ test("Memory frontmatter quotes YAML implicit scalar titles so they round-trip a
   expect(memoryFrontmatter("Example Memory", "example-memory")).toContain("title: Example Memory\n");
 });
 
-test("Basic Memory frontmatter parsing fails closed when required fields are missing or empty", () => {
+test("canonical KB Memory parsing fails closed when profile fields are missing or empty", () => {
   const cases = [
     `---
 type: note
@@ -141,13 +142,11 @@ permalink: ""
   ];
 
   for (const frontmatter of cases) {
-    expect(readBasicMemoryScalar(frontmatter, "title")).toBeNull();
-    expect(readBasicMemoryScalar(frontmatter, "type")).toBeNull();
-    expect(readBasicMemoryScalar(frontmatter, "permalink")).toBeNull();
+    expect(parseBasicMemoryDocument("memories/example.md", frontmatter).ok).toBe(false);
   }
 });
 
-test("Basic Memory scalar reads fail closed when frontmatter is malformed", () => {
+test("Basic Memory scalar reads stay frontmatter-scoped when the KB profile is incomplete", () => {
   const missingPermalink = `---
 title: Example
 type: note
@@ -158,7 +157,7 @@ tags:
 permalink: body-value
 `;
 
-  expect(readBasicMemoryScalar(missingPermalink, "title")).toBeNull();
+  expect(readBasicMemoryScalar(missingPermalink, "title")).toBe("Example");
   expect(readBasicMemoryScalar(missingPermalink, "permalink")).toBeNull();
 });
 
@@ -222,6 +221,71 @@ See [[Natural Title]], [[memories/other.md|Other]], and [[example-memory]].
       staleAfter: null,
       links: ["Natural Title", "memories/other.md", "example-memory"],
     },
+  });
+});
+
+test("the canonical Memory decoder accepts nested Basic Memory metadata without narrowing it", () => {
+  const text = `---
+title: Schema-rich Memory
+type: meeting
+tags:
+  - client
+source_refs:
+  - raw/call.md
+permalink: schema-rich-memory
+metadata:
+  attendees:
+    - name: Ada
+      role: owner
+  confidence: 0.9
+schema:
+  fields:
+    decision:
+      type: string
+---
+
+Durable content.
+`;
+
+  expect(parseBasicMemoryDocument("memories/meetings/schema-rich.md", text)).toEqual({
+    ok: true,
+    value: {
+      ref: "memories/meetings/schema-rich.md",
+      title: "Schema-rich Memory",
+      slug: "schema-rich-memory",
+      supersededBy: null,
+      reviewAfter: null,
+      staleAfter: null,
+      links: [],
+    },
+  });
+  expect(readBasicMemoryStringList(text, "tags")).toEqual(["client"]);
+  expect(readBasicMemoryStringList(text, "source_refs")).toEqual(["raw/call.md"]);
+});
+
+test("Basic Memory string-list reads accept the upstream comma-separated tag form", () => {
+  const text = `---
+title: Tagged Memory
+type: note
+tags: client, durable, agent-first
+permalink: tagged-memory
+---
+`;
+
+  expect(readBasicMemoryStringList(text, "tags")).toEqual(["client", "durable", "agent-first"]);
+});
+
+test("the canonical catalog accepts structured Memory folder refs", () => {
+  const line = indexLine("memories/projects/acme/client-call.md", "Acme Client Call", "meeting", "Decision captured.");
+  expect(parseCatalog(`${line}\n`)).toEqual({
+    entries: [{
+      ref: "memories/projects/acme/client-call.md",
+      title: "Acme Client Call",
+      category: "meeting",
+      summary: "Decision captured.",
+      line: 1,
+    }],
+    issues: [],
   });
 });
 

@@ -54,7 +54,7 @@ test("mutation matrix: kb enable search may change only configuration", async ()
 test("mutation matrix: kb reflect may change only configuration and log", async () => {
   await expectAllowedMutation("reflect", () => harness.run("kb", ["reflect", "--in", "research"], {
     env: { KB_NOW: "2026-07-17T12:00:00.000Z" },
-  }), [".kb/pending/reflect.json"], { memory: true });
+  }), ["kb.yaml", "log.md", ".kb/pending/reflect.json"], { memory: true });
 });
 
 test("mutation matrix: kb check may not mutate a b0 KB", async () => {
